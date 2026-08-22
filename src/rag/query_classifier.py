@@ -50,6 +50,9 @@ KNOWLEDGE_KEYWORDS = [
     "should receive", "should increase", "should decrease", "budget allocation",
     "objective", "target segment", "position", "lifecycle", "priorit",
     "approach", "guidance", "rule", "requirement", "principle", "expectation",
+    "minimum", "threshold", "maximum", "cap", "trigger", "triggers",
+    "what happens when", "what should happen", "how much budget",
+    "budget should", "allocate", "allocation",
 ]
 DIAGNOSTIC_PATTERNS = [
     r"why did .* decline", r"why (is|are|did|has|have) .* (drop|fall|decreas|decline)",
@@ -214,12 +217,14 @@ def classify(query: str) -> QueryClassification:
         # If the question is primarily asking about a document/policy/strategy topic,
         # and does NOT ask for specific numeric metric answers, prefer knowledge routing.
         # E.g. 'What discount policy does the pricing policy specify?' => knowledge
-        # But 'Which products had highest revenue AND what strategy is recommended?' => hybrid
+        # 'What is the minimum ROAS for Search Ads?' => knowledge (asking about a guideline)
         has_numeric_ask = any(w in q_lower for w in ["highest", "lowest", "top", "how much",
                                                      "how many", "total", "which product",
                                                      "which campaign", "which category"])
         doc_focus = any(kw in q_lower for kw in ["policy", "policies", "pricing policy",
-                                                  "guideline", "guidelines"])
+                                                  "guideline", "guidelines", "minimum",
+                                                  "threshold", "standard", "rule", "should be",
+                                                  "should happen", "triggers"])
         if doc_focus and not has_numeric_ask:
             return QueryClassification(
                 query_type="knowledge",

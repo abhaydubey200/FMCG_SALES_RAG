@@ -145,6 +145,12 @@ def upload_document(file: UploadFile = File(...)):
                             detail=f"Unsupported file type '{ext}'. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
     file_bytes = file.file.read()
 
+    # Reject large data files from knowledge base upload — use Data Hub instead
+    if ext in (".csv", ".xlsx", ".xls") and len(file_bytes) > 512_000:
+        raise HTTPException(status_code=422,
+                            detail=f"Data file '{file.filename}' is too large for knowledge base ingestion ({len(file_bytes):,} bytes). "
+                                   "Use the Data Hub upload instead for structured data files.")
+
     # For PDF files, extract text directly (load_and_chunk_document handles PDF)
     if ext == ".pdf":
         dest = Path(config.KB_DIR) / file.filename
