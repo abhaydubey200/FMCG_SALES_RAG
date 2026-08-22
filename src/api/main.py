@@ -822,12 +822,15 @@ def investigate_metric(metric: str):
             """).fetchall()]
         elif metric == "campaigns":
             result["breakdowns"]["by_status"] = [dict(r) for r in conn.execute("""
-                SELECT CASE
-                    WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 4 THEN 'top_performer'
-                    WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 3 THEN 'on_target'
-                    ELSE 'needs_review'
-                END as status, COUNT(*) as count
-                FROM campaigns GROUP BY status
+                SELECT status, COUNT(*) as count FROM (
+                    SELECT campaign_id,
+                        CASE
+                            WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 4 THEN 'top_performer'
+                            WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 3 THEN 'on_target'
+                            ELSE 'needs_review'
+                        END as status
+                    FROM campaigns GROUP BY campaign_id
+                ) GROUP BY status
             """).fetchall()]
             result["top_entities"] = [dict(r) for r in conn.execute("""
                 SELECT campaign_name, SUM(spend) as spend, SUM(attributed_revenue) as revenue,
