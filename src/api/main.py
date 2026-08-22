@@ -86,7 +86,7 @@ def list_documents():
     return list(docs.values())
 
 
-ALLOWED_EXTENSIONS = {".md", ".csv", ".xlsx", ".xls", ".txt"}
+ALLOWED_EXTENSIONS = {".md", ".csv", ".xlsx", ".xls", ".txt", ".pdf"}
 
 
 def _convert_data_file_to_markdown(file_bytes: bytes, filename: str) -> str:
@@ -145,8 +145,12 @@ def upload_document(file: UploadFile = File(...)):
                             detail=f"Unsupported file type '{ext}'. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
     file_bytes = file.file.read()
 
-    # For non-markdown files, convert to markdown first then save
-    if ext != ".md":
+    # For PDF files, extract text directly (load_and_chunk_document handles PDF)
+    if ext == ".pdf":
+        dest = Path(config.KB_DIR) / file.filename
+        dest.write_bytes(file_bytes)
+    elif ext != ".md":
+        # For non-markdown non-PDF files, convert to markdown first then save
         md_content = _convert_data_file_to_markdown(file_bytes, file.filename)
         stem = Path(file.filename).stem
         dest = Path(config.KB_DIR) / f"{stem}.md"
@@ -1004,3 +1008,168 @@ def global_search(q: str = ""):
             results.append({"type": "document", "id": doc.document_id, "title": doc.document_name, "subtitle": doc.document_type})
             break
     return {"results": results[:20], "total": len(results)}
+
+
+# ---------------------------------------------------------------------------
+# Data Center — Unified Data Asset Registry
+# ---------------------------------------------------------------------------
+
+@app.get("/api/data-center")
+def data_center():
+    """Unified registry of all structured + unstructured data assets."""
+    assets = []
+    # Structured assets from SQLite tables
+    try:
+        with sql_layer.get_conn() as conn:
+            tables = {
+                "products": "product_id",
+                "sales": "order_id",
+                "customers": "customer_id",
+                "campaigns": "campaign_id",
+                "reviews": "review_id",
+            }
+            for tbl, id_col in tables.items():
+                row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
+                count = row[0] if row else 0
+                assets.append({
+                    "id": f"structured_{tbl}",
+                    "name": tbl.title(),
+                    "type": "structured",
+                    "category": "database",
+                    "source": "SQLite",
+                    "status": "ready" if count > 0 else "empty",
+                    "row_count": count,
+                    "metadata": {"table": tbl, "id_column": id_col},
+                })
+    except Exception as e:
+        assets.append({"id": "db_error", "name": "Database", "type": "structured",
+                       "status": "error", "metadata": {"error": str(e)}})
+
+    # Unstructured assets from knowledge base
+    try:
+        docs = {}
+        for c in (_pipeline.vector_store.chunks if _pipeline else []):
+            if c.document_id not in docs:
+                docs[c.document_id] = {
+                    "id": f"kb_{c.document_id}",
+                    "name": c.document_name,
+                    "type": "unstructured",
+                    "category": "knowledge_base",
+                    "source": c.document_type,
+                    "status": "indexed",
+                    "chunk_count": 0,
+                    "metadata": {"document_id": c.document_id,
+                                  "document_type": c.document_type,
+                                  "source_path": c.metadata.get("source_path", "")},
+                }
+            docs[c.document_id]["chunk_count"] += 1
+        assets.extend(docs.values())
+    except Exception as e:
+        assets.append({"id": "kb_error", "name": "Knowledge Base", "type": "unstructured",
+                       "status": "error", "metadata": {"error": str(e)}})
+
+    # DataHub uploaded datasets
+    try:
+        from src.analytics.data_hub import list_datasets
+        datasets = list_datasets()
+        for ds in datasets:
+            assets.append({
+                "id": f"datahub_{ds.get('id', ds.get('filename', 'unknown'))}",
+                "name": ds.get('filename', 'Unknown'),
+                "type": "structured",
+                "category": "uploaded_dataset",
+                "source": "DataHub",
+                "status": "ready",
+                "row_count": ds.get('total_rows', 0),
+                "metadata": ds,
+            })
+    except Exception:
+        pass
+
+    return {
+        "assets": assets,
+        "total": len(assets),
+        "structured_count": len([a for a in assets if a.get("type") == "structured"]),
+        "unstructured_count": len([a for a in assets if a.get("type") == "unstructured"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Conversation Persistence
+# ---------------------------------------------------------------------------
+
+_conversations: dict = {}  # In-memory store
+
+
+@app.get("/api/conversations")
+def list_conversations():
+    convos = []
+    for cid, conv in _conversations.items():
+        messages = conv.get("messages", [])
+        title = messages[0]["content"][:80] if messages else "New Conversation"
+        convos.append({
+            "id": cid,
+            "title": title,
+            "message_count": len(messages),
+            "created_at": conv.get("created_at", ""),
+            "updated_at": conv.get("updated_at", ""),
+        })
+    convos.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return {"conversations": convos}
+
+
+@app.post("/api/conversations")
+def create_conversation():
+    cid = f"conv_{uuid.uuid4().hex[:12]}"
+    _conversations[cid] = {
+        "id": cid,
+        "messages": [],
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    return {"id": cid, "message_count": 0}
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    if conversation_id not in _conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return _conversations[conversation_id]
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+def add_message(conversation_id: str, message: dict):
+    if conversation_id not in _conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = _conversations[conversation_id]
+    role = message.get("role", "user")
+    content = message.get("content", "")
+
+    if role == "user":
+        conv["messages"].append({"role": "user", "content": content})
+        # Process the query
+        try:
+            result = _pipeline.answer(content)
+            result_dict = {
+                "answer": result.answer,
+                "query_type": result.query_type,
+                "sources": result.sources,
+                "metrics": result.metrics,
+                "evidence": result.evidence,
+            }
+            conv["messages"].append({"role": "assistant", "content": result.answer, "result": result_dict})
+        except Exception as e:
+            conv["messages"].append({"role": "assistant", "content": f"Error processing query: {e}"})
+    elif role == "assistant":
+        conv["messages"].append({"role": "assistant", "content": content, "result": message.get("result")})
+
+    conv["updated_at"] = datetime.now().isoformat()
+    return conv
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    if conversation_id in _conversations:
+        del _conversations[conversation_id]
+        return {"deleted": True}
+    raise HTTPException(status_code=404, detail="Conversation not found")

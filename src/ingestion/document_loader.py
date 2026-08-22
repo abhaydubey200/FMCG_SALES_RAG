@@ -72,8 +72,38 @@ def _word_window_chunks(text: str, size: int, overlap: int) -> List[str]:
     return chunks
 
 
+def _extract_pdf_text(path: Path) -> str:
+    """Extract text from a PDF file using PyMuPDF."""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(str(path))
+        pages = []
+        for i, page in enumerate(doc):
+            text = page.get_text()
+            if text.strip():
+                pages.append(f"## Page {i + 1}\n\n{text}")
+        doc.close()
+        return "\n\n".join(pages)
+    except ImportError:
+        raise RuntimeError("PyMuPDF (fitz) is required for PDF support. Install with: pip install pymupdf")
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse PDF: {e}")
+
+
 def load_and_chunk_document(path: Path, document_type: str = "policy") -> List[Chunk]:
-    raw = path.read_text(encoding="utf-8")
+    # Handle PDF files specially
+    if path.suffix.lower() == ".pdf":
+        raw = _extract_pdf_text(path)
+        # Derive document_type from filename
+        if "policy" in path.stem.lower():
+            document_type = "policy"
+        elif "strategy" in path.stem.lower():
+            document_type = "strategy"
+        elif "guideline" in path.stem.lower():
+            document_type = "guideline"
+    else:
+        raw = path.read_text(encoding="utf-8")
+
     cleaned = _clean_text(raw)
     document_id = path.stem
     document_name = path.stem.replace("_", " ").title()
@@ -102,8 +132,10 @@ def load_and_chunk_document(path: Path, document_type: str = "policy") -> List[C
 def load_knowledge_base(kb_dir: Path = None) -> List[Chunk]:
     kb_dir = kb_dir or config.KB_DIR
     all_chunks: List[Chunk] = []
-    for path in sorted(Path(kb_dir).glob("*.md")):
-        all_chunks.extend(load_and_chunk_document(path))
+    # Support .md, .txt, and .pdf files
+    for ext in ("*.md", "*.txt", "*.pdf"):
+        for path in sorted(Path(kb_dir).glob(ext)):
+            all_chunks.extend(load_and_chunk_document(path))
     return all_chunks
 
 

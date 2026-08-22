@@ -38,9 +38,12 @@ ANALYTICAL_KEYWORDS = [
     "revenue", "sales", "units sold", "roas", "ctr", "cpc", "cpa", "conversion rate",
     "conversions", "gross margin", "gross profit", "growth", "average order value", "aov",
     "lifetime value", "ltv", "repeat purchase", "acquisition cost", "cac",
-    "highest", "lowest", "top", "best-selling", "best selling", "most revenue",
-    "how much", "how many", "total spend", "spend to revenue", "spend", "budget",
+    "highest", "lowest", "top", "best", "best-selling", "best selling", "most revenue",
+    "how much", "how many", "total spend", "total sales", "total revenue",
+    "spend to revenue", "spend", "budget",
     "impressions", "clicks", "average discount", "average rating",
+    "region", "segment", "trend", "monthly", "discount", "margin",
+    "performed", "performance", "which",
 ]
 KNOWLEDGE_KEYWORDS = [
     "strategy", "policy", "guideline", "recommend", "recommended", "should we",
@@ -208,6 +211,21 @@ def classify(query: str) -> QueryClassification:
         )
 
     if is_analytical and is_knowledge:
+        # If the question is primarily asking about a document/policy/strategy topic,
+        # and does NOT ask for specific numeric metric answers, prefer knowledge routing.
+        # E.g. 'What discount policy does the pricing policy specify?' => knowledge
+        # But 'Which products had highest revenue AND what strategy is recommended?' => hybrid
+        has_numeric_ask = any(w in q_lower for w in ["highest", "lowest", "top", "how much",
+                                                     "how many", "total", "which product",
+                                                     "which campaign", "which category"])
+        doc_focus = any(kw in q_lower for kw in ["policy", "policies", "pricing policy",
+                                                  "guideline", "guidelines"])
+        if doc_focus and not has_numeric_ask:
+            return QueryClassification(
+                query_type="knowledge",
+                reason="Query is asking about a document/policy topic; routing to knowledge retrieval.",
+                resolved_product=product, resolved_category=category,
+            )
         return QueryClassification(
             query_type="hybrid", reason="Query mixes an analytical/metric ask with a knowledge/strategy ask.",
             resolved_product=product, resolved_category=category,

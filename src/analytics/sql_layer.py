@@ -320,6 +320,100 @@ def top_customers_by_ltv(limit: int = 10) -> list:
             (limit,)))
 
 
+def total_sales_summary() -> dict:
+    """Return aggregate sales metrics."""
+    with get_conn() as conn:
+        row = dict(conn.execute("""
+            SELECT COALESCE(SUM(revenue), 0) AS total_revenue,
+                   COALESCE(SUM(quantity), 0) AS total_units,
+                   COUNT(*) AS total_orders,
+                   COALESCE(SUM(revenue - cost), 0) AS gross_profit,
+                   ROUND(AVG(selling_price), 2) AS avg_selling_price,
+                   ROUND(AVG(discount), 2) AS avg_discount
+            FROM sales
+        """).fetchone())
+        row["gross_margin_pct"] = round(100.0 * row["gross_profit"] / row["total_revenue"], 2) if row["total_revenue"] else 0
+        row["avg_order_value"] = round(row["total_revenue"] / row["total_orders"], 2) if row["total_orders"] else 0
+        return row
+
+
+def revenue_by_region() -> list:
+    """Revenue broken down by customer region."""
+    with get_conn() as conn:
+        return _rows(conn.execute("""
+            SELECT c.region,
+                   COUNT(DISTINCT c.customer_id) AS customers,
+                   COALESCE(SUM(s.revenue), 0) AS revenue,
+                   COALESCE(SUM(s.quantity), 0) AS units_sold,
+                   ROUND(AVG(s.selling_price), 2) AS avg_selling_price
+            FROM sales s JOIN customers c ON s.customer_id = c.customer_id
+            GROUP BY c.region ORDER BY revenue DESC
+        """))
+
+
+def monthly_revenue_trend() -> list:
+    """Monthly revenue trend for analytical questions."""
+    with get_conn() as conn:
+        return _rows(conn.execute("""
+            SELECT strftime('%Y-%m', order_date) AS month,
+                   SUM(revenue) AS revenue,
+                   SUM(quantity) AS units_sold,
+                   SUM(revenue - cost) AS profit
+            FROM sales
+            GROUP BY month ORDER BY month
+        """))
+
+
+def customer_segment_summary() -> list:
+    """Customer segment metrics for analytical questions."""
+    with get_conn() as conn:
+        return _rows(conn.execute("""
+            SELECT c.segment,
+                   COUNT(DISTINCT c.customer_id) AS customers,
+                   ROUND(AVG(c.lifetime_value), 2) AS avg_ltv,
+                   COALESCE(SUM(s.revenue), 0) AS revenue,
+                   COALESCE(SUM(s.quantity), 0) AS units_sold
+            FROM customers c LEFT JOIN sales s ON c.customer_id = s.customer_id
+            GROUP BY c.segment ORDER BY revenue DESC
+        """))
+
+
+def campaign_summary() -> list:
+    """Campaign performance for analytical questions."""
+    with get_conn() as conn:
+        return _rows(conn.execute("""
+            SELECT campaign_name, channel, SUM(spend) AS spend,
+                   SUM(attributed_revenue) AS revenue,
+                   SUM(conversions) AS conversions,
+                   ROUND(SUM(attributed_revenue) * 1.0 / NULLIF(SUM(spend), 0), 2) AS roas
+            FROM campaigns
+            GROUP BY campaign_id
+            ORDER BY roas DESC
+        """))
+
+
+def discount_margin_analysis() -> list:
+    """Discount vs margin analysis for analytical questions."""
+    with get_conn() as conn:
+        return _rows(conn.execute("""
+            SELECT
+                CASE
+                    WHEN discount = 0 THEN '0% (No discount)'
+                    WHEN discount BETWEEN 0.01 AND 5 THEN '1-5%'
+                    WHEN discount BETWEEN 5.01 AND 10 THEN '5-10%'
+                    WHEN discount BETWEEN 10.01 AND 15 THEN '10-15%'
+                    WHEN discount > 15 THEN '15%+'
+                    ELSE 'Other'
+                END AS discount_band,
+                COUNT(*) AS orders,
+                SUM(revenue) AS total_revenue,
+                ROUND(AVG(revenue - cost), 2) AS avg_profit,
+                ROUND(100.0 * AVG(revenue - cost) / NULLIF(AVG(revenue), 0), 2) AS avg_margin_pct
+            FROM sales
+            GROUP BY discount_band ORDER BY MIN(discount)
+        """))
+
+
 # ---------------------------------------------------------------------------
 # Reviews (used heavily by diagnostic questions)
 # ---------------------------------------------------------------------------

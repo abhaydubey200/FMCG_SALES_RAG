@@ -78,10 +78,22 @@ def build_evidence(question: str, classification: QueryClassification,
         structured = {}
         product = classification.resolved_product
         category = classification.resolved_category
-
         q_lower = question.lower()
-        if "roas" in q_lower or "campaign" in q_lower:
+
+        # Route to specific data based on question content
+        if "total sales" in q_lower or "total revenue" in q_lower or "how much" in q_lower:
+            structured["total_sales_summary"] = sql_layer.total_sales_summary()
+        elif "region" in q_lower or "best region" in q_lower or "which region" in q_lower:
+            structured["revenue_by_region"] = sql_layer.revenue_by_region()
+        elif "trend" in q_lower or "monthly" in q_lower:
+            structured["monthly_trend"] = sql_layer.monthly_revenue_trend()
+        elif "roas" in q_lower or "campaign" in q_lower:
             structured["top_campaigns_by_roas"] = sql_layer.campaign_performance(limit=5, order_by="roas")
+        elif "segment" in q_lower or "customer segment" in q_lower or "ltv" in q_lower or "lifetime" in q_lower:
+            structured["customer_segments"] = sql_layer.customer_segment_summary()
+        elif ("discount" in q_lower or "margin" in q_lower) and "policy" not in q_lower and "strategy" not in q_lower:
+            structured["discount_margin_analysis"] = sql_layer.discount_margin_analysis()
+
         if product:
             structured["product"] = product
             structured["product_metrics_all_time"] = sql_layer.product_metrics(product["product_id"])
@@ -90,7 +102,7 @@ def build_evidence(question: str, classification: QueryClassification,
             structured["review_summary_all_time"] = sql_layer.review_summary(product["product_id"])
         if category:
             structured["category_performance"] = sql_layer.category_performance(category=category)
-        if not product and not category and "top_campaigns_by_roas" not in structured:
+        if not product and not category and not any(k in structured for k in ["top_campaigns_by_roas", "total_sales_summary", "revenue_by_region", "monthly_trend", "customer_segments", "discount_margin_analysis"]):
             structured["top_products_by_revenue"] = sql_layer.top_products_by_revenue(limit=5)
             structured["category_performance"] = sql_layer.category_performance()
 

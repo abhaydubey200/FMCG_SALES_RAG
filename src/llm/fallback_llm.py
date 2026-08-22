@@ -70,7 +70,43 @@ def _render_knowledge(evidence: dict) -> str:
 def _render_analytical(evidence: dict) -> str:
     sd = evidence.get("structured_data", {})
     lines = []
-    if "top_products_by_revenue" in sd and sd["top_products_by_revenue"]:
+
+    if "total_sales_summary" in sd:
+        s = sd["total_sales_summary"]
+        lines.append(f"**Total Sales Summary:**")
+        lines.append(f"- Total Revenue: {_fmt_money(s.get('total_revenue', 0))}")
+        lines.append(f"- Total Units Sold: {s.get('total_units', 0):,}")
+        lines.append(f"- Total Orders: {s.get('total_orders', 0):,}")
+        lines.append(f"- Gross Profit: {_fmt_money(s.get('gross_profit', 0))}")
+        lines.append(f"- Gross Margin: {s.get('gross_margin_pct', 0)}%")
+        lines.append(f"- Average Order Value: {_fmt_money(s.get('avg_order_value', 0))}")
+        lines.append(f"- Average Discount: {s.get('avg_discount', 0)}%")
+    elif "revenue_by_region" in sd:
+        regions = sd["revenue_by_region"]
+        lines.append("**Revenue by Region:**")
+        for r in regions:
+            lines.append(f"- {r['region']}: {_fmt_money(r['revenue'])} ({r['customers']:,} customers, {r['units_sold']:,} units)")
+        if regions:
+            lines.append(f"\n**Best performing region:** {regions[0]['region']} with {_fmt_money(regions[0]['revenue'])} in revenue.")
+    elif "monthly_trend" in sd:
+        trend = sd["monthly_trend"]
+        lines.append("**Monthly Revenue Trend:**")
+        for t in trend:
+            lines.append(f"- {t['month']}: {_fmt_money(t['revenue'])} ({t['units_sold']:,} units, profit {_fmt_money(t['profit'])})")
+    elif "customer_segments" in sd:
+        segments = sd["customer_segments"]
+        lines.append("**Customer Segment Performance:**")
+        for s in segments:
+            lines.append(f"- {s['segment']}: {s['customers']:,} customers, avg LTV ${s['avg_ltv']:,.2f}, revenue {_fmt_money(s['revenue'])}")
+        if segments:
+            lines.append(f"\n**Highest LTV segment:** {segments[0]['segment']} with ${segments[0]['avg_ltv']:,.2f} average lifetime value.")
+    elif "discount_margin_analysis" in sd:
+        bands = sd["discount_margin_analysis"]
+        lines.append("**Discount vs Margin Analysis:**")
+        for b in bands:
+            lines.append(f"- {b['discount_band']}: {b['orders']} orders, avg margin {b['avg_margin_pct']}%, revenue {_fmt_money(b['total_revenue'])}")
+        lines.append("\n*Note: The relationship between discount and margin is an observed correlation in the data, not necessarily a causal relationship.*")
+    elif "top_products_by_revenue" in sd and sd["top_products_by_revenue"]:
         top = sd["top_products_by_revenue"][0]
         lines.append(f"**Top product by revenue:** {top['product_name']} ({top['category']}) — "
                       f"{_fmt_money(top['revenue'])} across {top['units_sold']} units sold.")
@@ -86,6 +122,11 @@ def _render_analytical(evidence: dict) -> str:
         for c in sd["top_campaigns_by_roas"]:
             lines.append(f"- {c['campaign_name']} ({c['channel']}): ROAS {c['roas']}x, "
                           f"spend {_fmt_money(c['spend'])}, revenue {_fmt_money(c['attributed_revenue'])}")
+    elif "campaign_summary" in sd:
+        campaigns = sd["campaign_summary"]
+        lines.append("\n**Campaign Performance:**")
+        for c in campaigns:
+            lines.append(f"- {c['campaign_name']} ({c['channel']}): ROAS {c['roas']}x, spend {_fmt_money(c['spend'])}, revenue {_fmt_money(c['revenue'])}")
     if "category_performance" in sd and sd["category_performance"]:
         lines.append("\n**Category performance:**")
         for c in sd["category_performance"]:
