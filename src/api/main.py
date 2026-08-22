@@ -535,6 +535,42 @@ def discount_analytics():
 
 
 # ---------------------------------------------------------------------------
+# Data Status
+# ---------------------------------------------------------------------------
+
+@app.get("/api/data-status")
+def data_status():
+    """Return whether structured data and knowledge base exist."""
+    status = {"structured": {}, "knowledge": {}, "has_data": False}
+    try:
+        with sql_layer.get_conn() as conn:
+            tables = {
+                "products": conn.execute("SELECT COUNT(*) FROM products").fetchone()[0],
+                "sales": conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0],
+                "customers": conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0],
+                "campaigns": conn.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0],
+                "reviews": conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0],
+            }
+            status["structured"] = tables
+            status["has_data"] = any(v > 0 for v in tables.values())
+    except Exception:
+        status["structured"] = {"error": "database unavailable"}
+    try:
+        docs = set()
+        chunks = 0
+        if _pipeline and _pipeline.vector_store:
+            for c in _pipeline.vector_store.chunks:
+                docs.add(c.document_id)
+                chunks += 1
+        status["knowledge"] = {"documents": len(docs), "chunks": chunks}
+        status["has_knowledge"] = len(docs) > 0
+    except Exception:
+        status["knowledge"] = {"error": "vector store unavailable"}
+        status["has_knowledge"] = False
+    return status
+
+
+# ---------------------------------------------------------------------------
 # System Health / Observability
 # ---------------------------------------------------------------------------
 
