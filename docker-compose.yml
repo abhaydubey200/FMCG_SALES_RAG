@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  # ── PostgreSQL + pgvector ──
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ragsql-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ragsql}
+      POSTGRES_USER: ${POSTGRES_USER:-ragsql}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragsql_secret_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ragsql}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ragsql-net
+
+  # ── Redis ──
+  redis:
+    image: redis:7-alpine
+    container_name: ragsql-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ragsql-net
+
+  # ── FastAPI Backend ──
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ragsql-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://ragsql:ragsql_secret_dev@postgres:5432/ragsql
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      LOG_LEVEL: INFO
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - ragsql-net
+
+  # ── Background Worker ──
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: ragsql-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://ragsql:ragsql_secret_dev@postgres:5432/ragsql
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: INFO
+    networks:
+      - ragsql-net
+
+  # ── Streamlit Frontend ──
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: ragsql-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "${FRONTEND_PORT:-8501}:8501"
+    networks:
+      - ragsql-net
+
+  # ── Nginx Reverse Proxy ──
+  nginx:
+    image: nginx:alpine
+    container_name: ragsql-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - frontend
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - ragsql-net
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  ragsql-net:
+    driver: bridge

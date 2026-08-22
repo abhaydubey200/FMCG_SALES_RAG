@@ -608,15 +608,15 @@ def system_health():
         checks["vector_search"] = {"status": "error", "error": str(e)}
     # LLM
     checks["llm"] = {"status": "healthy", "backend": config.LLM_BACKEND, "model": config.OLLAMA_MODEL if config.LLM_BACKEND == "ollama" else "template-fallback"}
-    # Supabase
+    # Redis
     try:
-        from src.database.supabase_client import is_configured, health_check
-        if is_configured():
-            checks["supabase"] = health_check()
-        else:
-            checks["supabase"] = {"status": "not_configured"}
+        import redis as _redis
+        t0 = time.time()
+        r = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        r.ping()
+        checks["redis"] = {"status": "healthy", "latency_ms": round((time.time() - t0) * 1000, 2)}
     except Exception as e:
-        checks["supabase"] = {"status": "error", "error": str(e)}
+        checks["redis"] = {"status": "not_configured", "message": str(e)[:100]}
     return checks
 
 
