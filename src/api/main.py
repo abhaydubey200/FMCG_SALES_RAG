@@ -708,3 +708,263 @@ def executive_brief():
         },
     ]
     return {"sections": sections, "generated_at": datetime.now().isoformat() if 'datetime' in dir() else ""}
+
+
+# ---------------------------------------------------------------------------
+# Investigation Workspace
+# ---------------------------------------------------------------------------
+
+@app.get("/api/investigation/{metric}")
+def investigate_metric(metric: str):
+    """Drill-down investigation for a specific metric."""
+    with sql_layer.get_conn() as conn:
+        result = {"metric": metric, "breakdowns": {}, "trend": [], "top_entities": []}
+        if metric == "revenue":
+            # By category
+            cats = [dict(r) for r in conn.execute("""
+                SELECT p.category, SUM(s.revenue) as revenue, SUM(s.revenue - s.cost) as profit,
+                       COUNT(*) as orders
+                FROM sales s JOIN products p ON s.product_id = p.product_id
+                GROUP BY p.category ORDER BY revenue DESC
+            """).fetchall()]
+            result["breakdowns"]["by_category"] = cats
+            # By month trend
+            result["trend"] = [dict(r) for r in conn.execute("""
+                SELECT strftime('%Y-%m', order_date) AS month, SUM(revenue) AS revenue,
+                       SUM(quantity) AS units, SUM(revenue - cost) AS profit
+                FROM sales GROUP BY month ORDER BY month
+            """).fetchall()]
+            # Top products
+            result["top_entities"] = [dict(r) for r in conn.execute("""
+                SELECT p.product_name, p.category, SUM(s.revenue) as revenue
+                FROM sales s JOIN products p ON s.product_id = p.product_id
+                GROUP BY p.product_id ORDER BY revenue DESC LIMIT 10
+            """).fetchall()]
+        elif metric == "roas":
+            result["breakdowns"]["by_channel"] = [dict(r) for r in conn.execute("""
+                SELECT channel, COUNT(*) as campaigns, SUM(spend) as spend,
+                       SUM(attributed_revenue) as revenue,
+                       SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
+                FROM campaigns GROUP BY channel ORDER BY roas DESC
+            """).fetchall()]
+            result["top_entities"] = [dict(r) for r in conn.execute("""
+                SELECT campaign_name, channel, SUM(spend) as spend,
+                       SUM(attributed_revenue) as revenue,
+                       SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
+                FROM campaigns GROUP BY campaign_id ORDER BY roas DESC LIMIT 10
+            """).fetchall()]
+        elif metric == "margin":
+            result["breakdowns"]["by_category"] = [dict(r) for r in conn.execute("""
+                SELECT p.category, SUM(s.revenue) as revenue, SUM(s.revenue - s.cost) as profit,
+                       ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue),0), 1) as margin_pct
+                FROM sales s JOIN products p ON s.product_id = p.product_id
+                GROUP BY p.category ORDER BY margin_pct DESC
+            """).fetchall()]
+            result["top_entities"] = [dict(r) for r in conn.execute("""
+                SELECT p.product_name, p.category,
+                       ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue),0), 1) as margin_pct,
+                       SUM(s.revenue) as revenue
+                FROM sales s JOIN products p ON s.product_id = p.product_id
+                GROUP BY p.product_id HAVING revenue > 10000
+                ORDER BY margin_pct DESC LIMIT 10
+            """).fetchall()]
+        elif metric == "customers":
+            result["breakdowns"]["by_segment"] = [dict(r) for r in conn.execute("""
+                SELECT segment, COUNT(*) as customers, AVG(lifetime_value) as avg_ltv,
+                       SUM(lifetime_value) as total_ltv
+                FROM customers GROUP BY segment
+            """).fetchall()]
+        elif metric == "campaigns":
+            result["breakdowns"]["by_status"] = [dict(r) for r in conn.execute("""
+                SELECT CASE
+                    WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 4 THEN 'top_performer'
+                    WHEN SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) >= 3 THEN 'on_target'
+                    ELSE 'needs_review'
+                END as status, COUNT(*) as count
+                FROM campaigns GROUP BY status
+            """).fetchall()]
+            result["top_entities"] = [dict(r) for r in conn.execute("""
+                SELECT campaign_name, SUM(spend) as spend, SUM(attributed_revenue) as revenue,
+                       SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas,
+                       SUM(conversions) as conversions
+                FROM campaigns GROUP BY campaign_id ORDER BY roas DESC
+            """).fetchall()]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Action & Outcome Tracking
+# ---------------------------------------------------------------------------
+
+_actions: list = []  # In-memory store (would be database in production)
+_action_counter = 0
+
+@app.get("/api/actions")
+def list_actions():
+    return {"actions": _actions, "count": len(_actions)}
+
+@app.post("/api/actions")
+def create_action(action: dict):
+    global _action_counter
+    _action_counter += 1
+    new_action = {
+        "id": f"act_{_action_counter}",
+        "title": action.get("title", "Untitled Action"),
+        "description": action.get("description", ""),
+        "owner": action.get("owner", "Unassigned"),
+        "status": "open",
+        "source_insight": action.get("source_insight", ""),
+        "expected_outcome": action.get("expected_outcome", ""),
+        "actual_outcome": None,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    _actions.append(new_action)
+    return new_action
+
+@app.put("/api/actions/{action_id}")
+def update_action(action_id: str, update: dict):
+    for a in _actions:
+        if a["id"] == action_id:
+            for k, v in update.items():
+                if k in ("title", "description", "owner", "status", "actual_outcome", "expected_outcome"):
+                    a[k] = v
+            a["updated_at"] = datetime.now().isoformat()
+            return a
+    raise HTTPException(status_code=404, detail="Action not found")
+
+@app.delete("/api/actions/{action_id}")
+def delete_action(action_id: str):
+    global _actions
+    _actions = [a for a in _actions if a["id"] != action_id]
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Semantic Layer
+# ---------------------------------------------------------------------------
+
+@app.get("/api/semantic/metrics")
+def semantic_metrics():
+    metrics = [
+        {"name": "Revenue", "definition": "Total recognized sales revenue", "formula": "SUM(revenue)", "source": "sales", "dimensions": ["Product", "Category", "Region", "Customer", "Date"]},
+        {"name": "Units Sold", "definition": "Total units sold", "formula": "SUM(quantity)", "source": "sales", "dimensions": ["Product", "Category", "Date"]},
+        {"name": "Gross Profit", "definition": "Revenue minus cost of goods", "formula": "SUM(revenue - cost)", "source": "sales", "dimensions": ["Product", "Category", "Date"]},
+        {"name": "Gross Margin", "definition": "Profit margin percentage", "formula": "100 * SUM(revenue - cost) / SUM(revenue)", "source": "sales", "dimensions": ["Product", "Category"]},
+        {"name": "Average Order Value", "definition": "Revenue per order", "formula": "SUM(revenue) / COUNT(DISTINCT order_id)", "source": "sales", "dimensions": ["Customer", "Date"]},
+        {"name": "Discount %", "definition": "Mean discount applied", "formula": "AVG(discount)", "source": "sales", "dimensions": ["Product", "Category", "Campaign"]},
+        {"name": "ROAS", "definition": "Return on ad spend", "formula": "SUM(attributed_revenue) / SUM(spend)", "source": "campaigns", "dimensions": ["Campaign", "Channel", "Product"]},
+        {"name": "CTR", "definition": "Click-through rate", "formula": "SUM(clicks) / SUM(impressions)", "source": "campaigns", "dimensions": ["Campaign", "Channel"]},
+        {"name": "Conversion Rate", "definition": "Percentage of clicks converting to purchases", "formula": "SUM(conversions) / SUM(clicks)", "source": "campaigns", "dimensions": ["Campaign", "Channel"]},
+        {"name": "CPC", "definition": "Cost per click", "formula": "SUM(spend) / SUM(clicks)", "source": "campaigns", "dimensions": ["Campaign", "Channel"]},
+        {"name": "CPA", "definition": "Cost per acquisition", "formula": "SUM(spend) / SUM(conversions)", "source": "campaigns", "dimensions": ["Campaign", "Channel"]},
+        {"name": "LTV", "definition": "Customer lifetime value", "formula": "AVG(lifetime_value)", "source": "customers", "dimensions": ["Customer", "Segment", "Region"]},
+        {"name": "Repeat Purchase Rate", "definition": "Percentage of customers with >1 order", "formula": "COUNT(customer_id with orders > 1) / COUNT(DISTINCT customer_id)", "source": "sales", "dimensions": ["Segment", "Channel"]},
+    ]
+    return {"metrics": metrics, "count": len(metrics)}
+
+@app.get("/api/semantic/dimensions")
+def semantic_dimensions():
+    dimensions = [
+        {"name": "Product", "columns": ["product_id", "product_name", "category", "subcategory"], "source": "products"},
+        {"name": "Category", "columns": ["category", "subcategory"], "source": "products"},
+        {"name": "Customer", "columns": ["customer_id", "segment", "region"], "source": "customers"},
+        {"name": "Customer Segment", "values": ["Premium", "Regular", "Budget", "New Customer"], "source": "customers"},
+        {"name": "Region", "columns": ["region"], "source": "customers"},
+        {"name": "Campaign", "columns": ["campaign_id", "campaign_name", "channel"], "source": "campaigns"},
+        {"name": "Channel", "columns": ["channel"], "source": "campaigns"},
+        {"name": "Date", "columns": ["order_date", "start_date", "end_date"], "source": "sales"},
+    ]
+    return {"dimensions": dimensions, "count": len(dimensions)}
+
+
+# ---------------------------------------------------------------------------
+# Data Quality
+# ---------------------------------------------------------------------------
+
+@app.get("/api/data-quality")
+def data_quality():
+    report = {"tables": {}, "overall_score": 0}
+    with sql_layer.get_conn() as conn:
+        tables = {
+            "products": ["product_id", "product_name", "category", "price", "cost", "rating"],
+            "sales": ["order_id", "product_id", "customer_id", "revenue", "quantity", "discount"],
+            "customers": ["customer_id", "segment", "region", "lifetime_value"],
+            "campaigns": ["campaign_id", "campaign_name", "spend", "attributed_revenue"],
+            "reviews": ["review_id", "product_id", "rating", "review_text"],
+        }
+        total_checks = 0
+        passed_checks = 0
+        for table, columns in tables.items():
+            total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            table_report = {"total_rows": total, "checks": []}
+            for col in columns:
+                try:
+                    nulls = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IS NULL OR {col} = ''").fetchone()[0]
+                    total_checks += 1
+                    pct = round(100 * (total - nulls) / total, 1) if total > 0 else 100
+                    passed = pct >= 90
+                    if passed: passed_checks += 1
+                    table_report["checks"].append({
+                        "column": col, "null_count": nulls, "completeness": pct,
+                        "status": "pass" if passed else "warn",
+                    })
+                except Exception:
+                    pass
+            # Duplicate check
+            if "product_id" in columns:
+                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT product_id) FROM {table}").fetchone()[0]
+            elif "customer_id" in columns:
+                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT customer_id) FROM {table}").fetchone()[0]
+            elif "review_id" in columns:
+                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT review_id) FROM {table}").fetchone()[0]
+            elif "campaign_id" in columns:
+                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT campaign_id) FROM {table}").fetchone()[0]
+            else:
+                dups = 0
+            table_report["duplicate_count"] = dups
+            report["tables"][table] = table_report
+        report["overall_score"] = round(100 * passed_checks / total_checks, 1) if total_checks > 0 else 100
+        report["total_checks"] = total_checks
+        report["passed_checks"] = passed_checks
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Global Search
+# ---------------------------------------------------------------------------
+
+@app.get("/api/search")
+def global_search(q: str = ""):
+    if not q.strip():
+        return {"results": [], "total": 0}
+    results = []
+    ql = q.lower()
+    with sql_layer.get_conn() as conn:
+        # Products
+        prods = [dict(r) for r in conn.execute(
+            "SELECT product_id, product_name, category FROM products WHERE product_name LIKE ? OR category LIKE ? LIMIT 5",
+            (f"%{q}%", f"%{q}%")
+        ).fetchall()]
+        for p in prods:
+            results.append({"type": "product", "id": p["product_id"], "title": p["product_name"], "subtitle": p["category"]})
+        # Campaigns
+        camps = [dict(r) for r in conn.execute(
+            "SELECT campaign_id, campaign_name, channel FROM campaigns WHERE campaign_name LIKE ? OR channel LIKE ? LIMIT 5",
+            (f"%{q}%", f"%{q}%")
+        ).fetchall()]
+        for c in camps:
+            results.append({"type": "campaign", "id": c["campaign_id"], "title": c["campaign_name"], "subtitle": c["channel"]})
+        # Customers
+        custs = [dict(r) for r in conn.execute(
+            "SELECT customer_id, segment, region FROM customers WHERE segment LIKE ? OR region LIKE ? LIMIT 5",
+            (f"%{q}%", f"%{q}%")
+        ).fetchall()]
+        for c in custs:
+            results.append({"type": "customer", "id": c["customer_id"], "title": f"{c['segment']} Customer", "subtitle": c["region"]})
+    # Documents
+    for doc in (_pipeline.vector_store.chunks if _pipeline else []):
+        if ql in doc.document_name.lower() or ql in doc.text[:200].lower():
+            results.append({"type": "document", "id": doc.document_id, "title": doc.document_name, "subtitle": doc.document_type})
+            break
+    return {"results": results[:20], "total": len(results)}
