@@ -1,0 +1,20 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+scikit-learn>=1.3.0
+rank-bm25>=0.2.2
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+tabulate>=0.9.0
+plotly>=5.18.0
+requests>=2.28.0
+httpx>=0.24.0
+streamlit>=1.24.0
+pytest>=7.0.0
+
+# Optional — only needed if EMBEDDING_BACKEND=neural (requires HuggingFace
+# network access to download model weights; not used by default):
+# sentence-transformers>=3.0.0

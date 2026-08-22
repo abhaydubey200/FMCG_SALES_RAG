@@ -1,0 +1,54 @@
+{
+  "knowledge_questions": [
+    {"id": "K1", "question": "What is the recommended strategy for high-value customers?", "expected_query_type": "knowledge", "expected_source": "Customer Strategy", "expected_characteristics": "Mentions repeat purchase within 60 days, cross-category purchase, loyalty engagement"},
+    {"id": "K2", "question": "What channels are best for retention campaigns?", "expected_query_type": "knowledge", "expected_source": "Campaign Guidelines / Marketing Strategy", "expected_characteristics": "Mentions Email as primary retention channel"},
+    {"id": "K3", "question": "What is the maximum discount allowed without approval?", "expected_query_type": "knowledge", "expected_source": "Pricing Policy", "expected_characteristics": "States 15% maximum"},
+    {"id": "K4", "question": "How should Electronics products be positioned?", "expected_query_type": "knowledge", "expected_source": "Product Strategy", "expected_characteristics": "Mentions reliability, battery life, connectivity"},
+    {"id": "K5", "question": "What is the minimum acceptable ROAS for conversion campaigns?", "expected_query_type": "knowledge", "expected_source": "Campaign Guidelines", "expected_characteristics": "States 3.0x minimum, 4.0x target"},
+    {"id": "K6", "question": "What are the four customer lifecycle segments?", "expected_query_type": "knowledge", "expected_source": "Customer Strategy", "expected_characteristics": "Premium, Regular, Budget, New Customer"},
+    {"id": "K7", "question": "What acquisition channels are prioritized for new customers?", "expected_query_type": "knowledge", "expected_source": "Customer Strategy", "expected_characteristics": "Mentions Paid Search and Social Media"},
+    {"id": "K8", "question": "What is the top category priority for FY2025-2026?", "expected_query_type": "knowledge", "expected_source": "Product Strategy", "expected_characteristics": "States Electronics as #1 priority"},
+    {"id": "K9", "question": "When should a promoted product be flagged for a root-cause quality review?", "expected_query_type": "knowledge", "expected_source": "Product Strategy", "expected_characteristics": "Mentions rating drop >0.3 or negative themes >15% of reviews in a quarter"},
+    {"id": "K10", "question": "What is the company's policy on stacking campaign discounts with coupons?", "expected_query_type": "knowledge", "expected_source": "Pricing Policy", "expected_characteristics": "Not permitted if combined discount exceeds 20%"}
+  ],
+  "analytical_questions": [
+    {"id": "A1", "question": "Which product generated the highest revenue?", "expected_query_type": "analytical", "expected_source": "sales/products tables", "expected_characteristics": "Returns a specific product name and revenue figure"},
+    {"id": "A2", "question": "Which campaign had the highest ROAS?", "expected_query_type": "analytical", "expected_source": "campaigns table", "expected_characteristics": "Returns campaign name and ROAS value"},
+    {"id": "A3", "question": "What is the gross margin percentage for the Electronics category?", "expected_query_type": "analytical", "expected_source": "sales/products tables", "expected_characteristics": "Returns a numeric margin percentage"},
+    {"id": "A4", "question": "How many total customers are in the Premium segment?", "expected_query_type": "analytical", "expected_source": "customers table", "expected_characteristics": "Returns customer count / revenue by segment"},
+    {"id": "A5", "question": "What is the average order value?", "expected_query_type": "analytical", "expected_source": "sales table", "expected_characteristics": "Returns a numeric AOV"},
+    {"id": "A6", "question": "Which category has the highest revenue?", "expected_query_type": "analytical", "expected_source": "sales/products tables", "expected_characteristics": "Returns category name and revenue"},
+    {"id": "A7", "question": "What is the total marketing spend across all campaigns?", "expected_query_type": "analytical", "expected_source": "campaigns table", "expected_characteristics": "Returns total spend figure"},
+    {"id": "A8", "question": "What is the CTR for the top campaign by spend?", "expected_query_type": "analytical", "expected_source": "campaigns table", "expected_characteristics": "Returns numeric CTR"},
+    {"id": "A9", "question": "Which products have the top 5 revenue?", "expected_query_type": "analytical", "expected_source": "sales/products tables", "expected_characteristics": "Returns ranked list of 5 products"},
+    {"id": "A10", "question": "What is the conversion rate for campaigns in the Sports & Outdoors category?", "expected_query_type": "analytical", "expected_source": "campaigns table", "expected_characteristics": "Returns numeric conversion rate"}
+  ],
+  "hybrid_questions": [
+    {"id": "H1", "question": "Which products generated the highest revenue, and what marketing strategy does the company recommend for those products?", "expected_query_type": "hybrid", "expected_source": "sales table + Marketing Strategy doc", "expected_characteristics": "Combines top-revenue product list with strategy guidance"},
+    {"id": "H2", "question": "What was Electronics category revenue, and what does the strategy documentation recommend for growing Electronics?", "expected_query_type": "hybrid", "expected_source": "sales table + Product Strategy doc", "expected_characteristics": "Combines revenue figure with lifecycle/positioning guidance"},
+    {"id": "H3", "question": "Which campaign had the highest ROAS, and what ROAS target does campaign guidance recommend?", "expected_query_type": "hybrid", "expected_source": "campaigns table + Campaign Guidelines doc", "expected_characteristics": "Combines actual ROAS with the 3.0x/4.0x guideline"},
+    {"id": "H4", "question": "What is the average discount for Beauty products, and what does pricing policy say the maximum should be?", "expected_query_type": "hybrid", "expected_source": "sales table + Pricing Policy doc", "expected_characteristics": "Combines actual avg discount with 15% policy ceiling"},
+    {"id": "H5", "question": "Which customer segment generates the most revenue, and what retention strategy is recommended for them?", "expected_query_type": "hybrid", "expected_source": "customers/sales tables + Customer Strategy doc", "expected_characteristics": "Combines segment revenue with retention guidance"}
+  ],
+  "diagnostic_questions": [
+    {"id": "D1", "question": "Aurora Pro Wireless Earbuds sales declined in Q2 2025. What are the likely reasons?", "expected_query_type": "diagnostic", "expected_source": "sales, campaigns, reviews tables + Product Strategy doc", "expected_characteristics": "Separates observed facts (discount drop, spend drop, negative reviews) from inference from unsupported assumptions"},
+    {"id": "D2", "question": "Why did revenue drop for the Aurora Pro Wireless Earbuds?", "expected_query_type": "diagnostic", "expected_source": "sales, reviews tables", "expected_characteristics": "Cites Q1 vs Q2 2025 revenue comparison and contributing factors"},
+    {"id": "D3", "question": "The Aurora Pro Wireless Earbuds underperformed in Q2. What factors contributed?", "expected_query_type": "diagnostic", "expected_source": "sales, campaigns, reviews tables", "expected_characteristics": "Lists discount, marketing spend, and review sentiment as candidate factors, not confirmed single cause"}
+  ],
+  "unanswerable_questions": [
+    {"id": "U1", "question": "What will Amazon's total sales be in 2030?", "expected_query_type": "unanswerable", "expected_source": "none", "expected_characteristics": "Explicitly states data does not support this prediction"},
+    {"id": "U2", "question": "What will next year's Electronics revenue be?", "expected_query_type": "unanswerable", "expected_source": "none", "expected_characteristics": "Declines to fabricate a forecast"},
+    {"id": "U3", "question": "How many units will the Aurora Pro Wireless Earbuds sell in 2028?", "expected_query_type": "unanswerable", "expected_source": "none", "expected_characteristics": "Declines to fabricate a forecast"},
+    {"id": "U4", "question": "What is our main competitor's pricing strategy?", "expected_query_type": "unanswerable", "expected_source": "none", "expected_characteristics": "No competitor data is present in dataset or KB; should state information unavailable, not invent competitor names"},
+    {"id": "U5", "question": "What will the CEO decide about next year's marketing budget?", "expected_query_type": "unanswerable", "expected_source": "none", "expected_characteristics": "No such information exists; should state unavailable"}
+  ],
+  "ambiguous_questions": [
+    {"id": "AM1", "question": "Why did sales decline?", "expected_query_type": "ambiguous", "expected_source": "none", "expected_characteristics": "No product/category specified; system should ask for clarification rather than guess a product"},
+    {"id": "AM2", "question": "How is the product doing?", "expected_query_type": "ambiguous_or_knowledge", "expected_source": "none", "expected_characteristics": "No specific product named; system should not silently assume a product"},
+    {"id": "AM3", "question": "What about the campaign performance?", "expected_query_type": "analytical_default", "expected_source": "campaigns table (best-effort)", "expected_characteristics": "No specific campaign named; acceptable to return an overview or ask for clarification, but must not fabricate a specific unnamed campaign's numbers"}
+  ],
+  "conflicting_information_questions": [
+    {"id": "C1", "question": "What discount is recommended for campaigns?", "expected_query_type": "knowledge", "expected_source": "Marketing Strategy + Pricing Policy", "expected_characteristics": "Must explicitly flag that Marketing Strategy says 10% (recommended) vs Pricing Policy says 15% (maximum), not silently merge them"},
+    {"id": "C2", "question": "What is the maximum discount we can offer on a promotion?", "expected_query_type": "knowledge", "expected_source": "Marketing Strategy + Pricing Policy", "expected_characteristics": "Should surface both the 10% marketing guideline and 15% pricing ceiling and note they answer slightly different questions"}
+  ]
+}
