@@ -18,6 +18,7 @@ class QueryResponse(BaseModel):
     sources: List[SourceItem]
     metrics: dict
     evidence: dict
+    visualization: dict = Field(default_factory=dict)
 
 
 class DocumentInfo(BaseModel):

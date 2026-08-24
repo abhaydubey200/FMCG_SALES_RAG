@@ -54,6 +54,30 @@ export const sendQuery = (question: string) =>
     sources: Array<{ type: string; source: string }>;
     metrics: Record<string, unknown>;
     evidence: Record<string, unknown>;
+    visualization?: {
+      kpis?: Array<{ label: string; value: string; delta?: number | null }>;
+      charts?: Array<{
+        type: string;
+        title: string;
+        data: Record<string, unknown>[];
+        x_key: string;
+        y_keys: string[];
+        y_labels?: string[];
+        colors?: string[];
+      }>;
+      tables?: Array<{
+        title: string;
+        columns: Array<{
+          key: string;
+          header: string;
+          sortable?: boolean;
+          align?: string;
+          format?: string;
+        }>;
+        rows: Record<string, unknown>[];
+      }>;
+      follow_ups?: string[];
+    };
   }>("/query", {
     method: "POST",
     body: JSON.stringify({ question }),

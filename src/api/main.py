@@ -118,6 +118,7 @@ def query(req: QueryRequest):
     return QueryResponse(
         answer=result.answer, query_type=result.query_type,
         sources=result.sources, metrics=result.metrics, evidence=result.evidence,
+        visualization=result.visualization,
     )
 
 
@@ -1291,6 +1292,7 @@ def add_message(conversation_id: str, message: dict):
                     "answer": result.answer, "query_type": result.query_type,
                     "sources": result.sources, "metrics": result.metrics,
                     "evidence": result.evidence,
+                    "visualization": result.visualization,
                 }
                 cur.execute("INSERT INTO conversation_messages (conversation_id, role, content, result) VALUES (%s, %s, %s, %s)",
                             (conversation_id, "assistant", result.answer, json.dumps(result_dict, default=str)))

@@ -5,16 +5,11 @@ import {
   Send,
   Plus,
   History,
-  Copy,
-  RotateCcw,
-  ChevronDown,
-  ChevronUp,
-  Loader2,
-  MessageSquare,
-  FileText,
-  Database,
-  AlertTriangle,
   Sparkles,
+  Loader2,
+  Trash2,
+  BarChart3,
+  Brain,
 } from "lucide-react";
 import {
   sendQuery,
@@ -25,9 +20,8 @@ import {
   addMessage,
   deleteConversation,
 } from "@/lib/api/client";
-import { cn, getQueryTypeVariant, truncate } from "@/lib/utils";
-import { Badge } from "@/components/common/Badge";
-import { EmptyState } from "@/components/common/EmptyState";
+import { cn } from "@/lib/utils";
+import { AnalystResponse } from "@/components/analyst/AnalystResponse";
 
 interface Message {
   role: "user" | "assistant";
@@ -46,6 +40,30 @@ interface Message {
       structured_data?: Record<string, unknown>;
       detected_conflict?: { note: string };
     };
+    visualization?: {
+      kpis?: Array<{ label: string; value: string; delta?: number | null }>;
+      charts?: Array<{
+        type: string;
+        title: string;
+        data: Record<string, unknown>[];
+        x_key: string;
+        y_keys: string[];
+        y_labels?: string[];
+        colors?: string[];
+      }>;
+      tables?: Array<{
+        title: string;
+        columns: Array<{
+          key: string;
+          header: string;
+          sortable?: boolean;
+          align?: string;
+          format?: string;
+        }>;
+        rows: Record<string, unknown>[];
+      }>;
+      follow_ups?: string[];
+    };
   };
 }
 
@@ -57,6 +75,20 @@ interface Conversation {
   updated_at: string;
 }
 
+const EXAMPLE_PROMPTS = [
+  { text: "What are total sales?", icon: "📊", category: "Analytics" },
+  { text: "Show monthly sales trend.", icon: "📈", category: "Analytics" },
+  { text: "Show revenue by region.", icon: "🗺️", category: "Analytics" },
+  { text: "Which product generated the highest revenue?", icon: "🏆", category: "Analytics" },
+  { text: "Which campaign has the best ROAS?", icon: "📣", category: "Marketing" },
+  { text: "What does the marketing strategy recommend?", icon: "📄", category: "RAG" },
+  {
+    text: "Why did sales decline in the North region after the campaign?",
+    icon: "🔍",
+    category: "Investigation",
+  },
+];
+
 export function AIAnalyst() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -66,11 +98,9 @@ export function AIAnalyst() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConvId, setCurrentConvId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [expandedEvidence, setExpandedEvidence] = useState<Record<number, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Check data status
   useEffect(() => {
     const checkData = async () => {
       try {
@@ -85,7 +115,6 @@ export function AIAnalyst() {
     checkData();
   }, []);
 
-  // Load conversations
   const loadConversations = async () => {
     try {
       const data = await listConversations();
@@ -99,13 +128,12 @@ export function AIAnalyst() {
     loadConversations();
   }, []);
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async () => {
-    const q = input.trim();
+  const handleSend = async (overrideInput?: string) => {
+    const q = (overrideInput || input).trim();
     if (!q || loading) return;
 
     const userMessage: Message = { role: "user", content: q };
@@ -114,27 +142,23 @@ export function AIAnalyst() {
     setLoading(true);
 
     try {
-      // Create conversation if needed
       if (!currentConvId) {
         const conv = await createConversation();
         setCurrentConvId(conv.id);
       }
 
-      // Add user message to conversation
       if (currentConvId) {
         await addMessage(currentConvId, { role: "user", content: q });
       }
 
-      // Send query
       const result = await sendQuery(q);
       const assistantMessage: Message = {
         role: "assistant",
         content: result.answer,
-        result,
+        result: result as Message["result"],
       };
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Add assistant message to conversation
       if (currentConvId) {
         await addMessage(currentConvId, {
           role: "assistant",
@@ -199,46 +223,27 @@ export function AIAnalyst() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-  };
-
-  const getSuggestions = () => {
-    const suggestions: string[] = [];
-    if (hasData) {
-      suggestions.push(
-        "Which category generated the highest revenue?",
-        "Why did Electronics revenue decline in Q2?",
-        "Which campaign has the highest ROAS?",
-        "Which customer segment has the highest LTV?"
-      );
-    }
-    if (hasKb) {
-      suggestions.push(
-        "What does the marketing strategy recommend?",
-        "What discount policy does the pricing policy specify?"
-      );
-    }
-    return suggestions;
-  };
+  const isEmpty = messages.length === 0 && !loading;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full bg-slate-50">
       {/* History Sidebar */}
       {showHistory && (
         <div className="w-72 border-r border-slate-200 bg-white flex flex-col shrink-0">
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-            <span className="text-sm font-semibold text-slate-900">History</span>
+            <span className="text-sm font-semibold text-slate-900">
+              Conversations
+            </span>
             <button
               onClick={() => setShowHistory(false)}
-              className="text-slate-400 hover:text-slate-600"
+              className="text-slate-400 hover:text-slate-600 p-1"
             >
               ×
             </button>
           </div>
           <div className="flex-1 overflow-y-auto">
             {conversations.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-slate-400">
+              <div className="px-4 py-12 text-center text-sm text-slate-400">
                 No conversations yet
               </div>
             ) : (
@@ -246,8 +251,8 @@ export function AIAnalyst() {
                 <div
                   key={conv.id}
                   className={cn(
-                    "px-4 py-3 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors",
-                    currentConvId === conv.id && "bg-brand-50"
+                    "px-4 py-3 border-b border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors group",
+                    currentConvId === conv.id && "bg-brand-50 border-l-2 border-l-brand-500"
                   )}
                   onClick={() => handleLoadConversation(conv)}
                 >
@@ -263,9 +268,9 @@ export function AIAnalyst() {
                         e.stopPropagation();
                         handleDeleteConversation(conv.id);
                       }}
-                      className="text-xs text-slate-400 hover:text-rose-500"
+                      className="text-xs text-slate-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      Delete
+                      <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 </div>
@@ -275,18 +280,20 @@ export function AIAnalyst() {
         </div>
       )}
 
-      {/* Main Chat Area */}
+      {/* Main Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-brand-100 flex items-center justify-center">
-              <Sparkles className="w-4 h-4 text-brand-600" />
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center">
+              <Brain className="w-4 h-4 text-white" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-slate-900">AI Analyst</h1>
+              <h1 className="text-base font-bold text-slate-900">
+                AI Analyst
+              </h1>
               <p className="text-xs text-slate-400">
-                Ask anything about your data
+                Decision Intelligence Workspace
               </p>
             </div>
           </div>
@@ -314,177 +321,76 @@ export function AIAnalyst() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          {messages.length === 0 && !loading ? (
-            <div className="max-w-2xl mx-auto py-12">
-              <EmptyState
-                icon="🤖"
-                title="What can I help you analyze?"
-                description="Ask questions about your sales data, marketing campaigns, customer segments, or uploaded documents."
-              />
-              {getSuggestions().length > 0 && (
-                <div className="mt-8 space-y-2">
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
-                    Suggested questions
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {getSuggestions().map((s, i) => (
-                      <button
-                        key={i}
-                        onClick={() => {
-                          setInput(s);
-                          inputRef.current?.focus();
-                        }}
-                        className="text-left px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
+        <div className="flex-1 overflow-y-auto">
+          {isEmpty ? (
+            /* Empty State */
+            <div className="max-w-2xl mx-auto px-6 py-16">
+              <div className="text-center mb-10">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center mx-auto mb-4">
+                  <Sparkles className="w-7 h-7 text-white" />
                 </div>
-              )}
+                <h2 className="text-xl font-bold text-slate-900 mb-2">
+                  What would you like to analyze?
+                </h2>
+                <p className="text-sm text-slate-500 max-w-md mx-auto">
+                  Ask questions about your sales data, marketing campaigns,
+                  customer segments, or uploaded documents. Get KPIs,
+                  visualizations, and evidence-backed answers.
+                </p>
+              </div>
+
+              {/* Example Prompts */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {EXAMPLE_PROMPTS.map((prompt, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setInput(prompt.text);
+                      inputRef.current?.focus();
+                    }}
+                    className="flex items-start gap-3 text-left px-4 py-3 rounded-xl border border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/50 transition-all group"
+                  >
+                    <span className="text-lg mt-0.5">{prompt.icon}</span>
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-slate-700 group-hover:text-brand-700 transition-colors block">
+                        {prompt.text}
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        {prompt.category}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto space-y-4">
+            /* Messages */
+            <div className="max-w-4xl mx-auto px-6 py-6 space-y-6">
               {messages.map((msg, i) => (
-                <div key={i} className="animate-fade-in">
+                <div key={i}>
                   {msg.role === "user" ? (
-                    <div className="msg-user">
-                      <span className="font-semibold text-slate-700">You: </span>
-                      {msg.content}
+                    /* User message */
+                    <div className="flex justify-end">
+                      <div className="max-w-[80%] bg-brand-600 text-white rounded-2xl rounded-tr-md px-4 py-2.5 text-sm">
+                        {msg.content}
+                      </div>
                     </div>
                   ) : (
-                    <div>
-                      <div className="msg-ai">
-                        {/* Classification */}
-                        {msg.result && (
-                          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-slate-100">
-                            <span
-                              className={cn(
-                                "badge",
-                                getQueryTypeVariant(msg.result.query_type)
-                              )}
-                            >
-                              {msg.result.query_type.toUpperCase()}
-                            </span>
-                            <span className="text-xs text-slate-400">
-                              {(msg.result.metrics?.end_to_end_latency_ms as number)?.toFixed(0) || 0}ms
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Answer */}
-                        <div className="leading-relaxed whitespace-pre-wrap">
+                    /* Assistant message */
+                    <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-md px-5 py-4 shadow-sm">
+                      {msg.result ? (
+                        <AnalystResponse
+                          answer={msg.content}
+                          queryType={msg.result.query_type}
+                          visualization={msg.result.visualization as any}
+                          sources={msg.result.sources}
+                          evidence={msg.result.evidence as any}
+                          metrics={msg.result.metrics}
+                          onFollowUp={(q) => handleSend(q)}
+                        />
+                      ) : (
+                        <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
                           {msg.content}
-                        </div>
-
-                        {/* Action buttons */}
-                        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-                          <button
-                            onClick={() => copyToClipboard(msg.content)}
-                            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                          >
-                            <Copy className="w-3 h-3" />
-                            Copy
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Evidence Panel */}
-                      {msg.result && (
-                        <div className="mt-2">
-                          <button
-                            onClick={() =>
-                              setExpandedEvidence((prev) => ({
-                                ...prev,
-                                [i]: !prev[i],
-                              }))
-                            }
-                            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors w-full"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                            Evidence ({msg.result.sources?.length || 0} sources)
-                            {expandedEvidence[i] ? (
-                              <ChevronUp className="w-3.5 h-3.5 ml-auto" />
-                            ) : (
-                              <ChevronDown className="w-3.5 h-3.5 ml-auto" />
-                            )}
-                          </button>
-
-                          {expandedEvidence[i] && (
-                            <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3 animate-fade-in">
-                              {/* Sources */}
-                              {msg.result.sources?.map((s, j) => (
-                                <div key={j} className="flex items-center gap-2">
-                                  {s.type === "knowledge_base" ? (
-                                    <FileText className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                                  ) : (
-                                    <Database className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                  )}
-                                  <span className="text-sm font-medium text-slate-700">
-                                    {s.source}
-                                  </span>
-                                  <Badge
-                                    variant={
-                                      s.type === "knowledge_base"
-                                        ? "violet"
-                                        : "success"
-                                    }
-                                  >
-                                    {s.type === "knowledge_base" ? "Doc" : "Data"}
-                                  </Badge>
-                                </div>
-                              ))}
-
-                              {/* Knowledge Chunks */}
-                              {msg.result.evidence?.knowledge_base_chunks?.map(
-                                (chunk, j) => (
-                                  <div
-                                    key={j}
-                                    className="evidence-item"
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-medium text-slate-700">
-                                        {chunk.source}
-                                      </span>
-                                      <span className="text-xs text-brand-500">
-                                        relevance: {chunk.relevance_score}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-slate-500 mt-1">
-                                      {truncate(chunk.text, 300)}
-                                    </div>
-                                  </div>
-                                )
-                              )}
-
-                              {/* Structured Data */}
-                              {msg.result.evidence?.structured_data && (
-                                <div>
-                                  <p className="text-xs font-semibold text-slate-500 mb-1">
-                                    Structured Data:
-                                  </p>
-                                  <pre className="text-xs text-slate-600 bg-white rounded p-2 border border-slate-200 overflow-x-auto">
-                                    {JSON.stringify(
-                                      msg.result.evidence.structured_data,
-                                      null,
-                                      2
-                                    )}
-                                  </pre>
-                                </div>
-                              )}
-
-                              {/* Conflict Warning */}
-                              {msg.result.evidence?.detected_conflict && (
-                                <div className="flex items-start gap-2 p-2 rounded bg-amber-50 border border-amber-200">
-                                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                                  <span className="text-xs text-amber-700">
-                                    {msg.result.evidence.detected_conflict.note}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
@@ -492,12 +398,26 @@ export function AIAnalyst() {
                 </div>
               ))}
 
-              {/* Loading Indicator */}
+              {/* Loading */}
               {loading && (
-                <div className="msg-ai animate-fade-in">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span className="text-sm">Analyzing your question...</span>
+                <div>
+                  <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-md px-5 py-4 shadow-sm">
+                    <div className="flex items-center gap-3 text-slate-500">
+                      <Loader2 className="w-4 h-4 animate-spin text-brand-500" />
+                      <span className="text-sm">
+                        Analyzing your question...
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-1.5">
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <div className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />
+                        Classifying query intent
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Retrieving evidence from data sources
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -507,9 +427,9 @@ export function AIAnalyst() {
           )}
         </div>
 
-        {/* Input Area */}
+        {/* Composer */}
         <div className="border-t border-slate-200 bg-white px-6 py-4">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-4xl mx-auto">
             <div className="flex items-end gap-3">
               <div className="flex-1 relative">
                 <textarea
@@ -524,22 +444,23 @@ export function AIAnalyst() {
                   }
                   disabled={loading}
                   rows={1}
-                  className="w-full resize-none rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  style={{ minHeight: "44px", maxHeight: "120px" }}
+                  className="w-full resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ minHeight: "48px", maxHeight: "120px" }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement;
                     target.style.height = "auto";
-                    target.style.height = Math.min(target.scrollHeight, 120) + "px";
+                    target.style.height =
+                      Math.min(target.scrollHeight, 120) + "px";
                   }}
                 />
               </div>
               <button
-                onClick={handleSend}
+                onClick={() => handleSend()}
                 disabled={!input.trim() || loading}
                 className={cn(
-                  "flex items-center justify-center w-10 h-10 rounded-lg transition-colors shrink-0",
+                  "flex items-center justify-center w-11 h-11 rounded-xl transition-all shrink-0",
                   input.trim() && !loading
-                    ? "bg-brand-600 text-white hover:bg-brand-700"
+                    ? "bg-brand-600 text-white hover:bg-brand-700 shadow-sm"
                     : "bg-slate-100 text-slate-400 cursor-not-allowed"
                 )}
               >

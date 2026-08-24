@@ -32,6 +32,7 @@ class QueryResult:
     sources: List[dict] = field(default_factory=list)
     evidence: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
+    visualization: dict = field(default_factory=dict)
 
 
 class _LRUCache:
@@ -157,6 +158,10 @@ class RAGPipeline:
 
         sources = self._extract_sources(evidence)
 
+        # Generate visualization specs from real evidence data
+        from src.rag.visualization_planner import plan_visualization
+        viz = plan_visualization(question, evidence, classification.query_type)
+
         metrics = {
             "query_type": classification.query_type,
             "classification_reason": classification.reason,
@@ -174,6 +179,7 @@ class RAGPipeline:
             sources=sources,
             evidence=evidence,
             metrics=metrics,
+            visualization=viz,
         )
         # Diagnostic/analytical answers are computed from a point-in-time
         # snapshot of the warehouse; caching is safe here because this
