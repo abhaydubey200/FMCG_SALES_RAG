@@ -48,11 +48,11 @@ ANALYTICAL_KEYWORDS = [
 KNOWLEDGE_KEYWORDS = [
     "strategy", "policy", "guideline", "recommend", "recommended", "should we",
     "should receive", "should increase", "should decrease", "budget allocation",
-    "objective", "target segment", "position", "lifecycle", "priorit",
+    "objective", "target segment", "position", "lifecycle", "priorit", "priority",
     "approach", "guidance", "rule", "requirement", "principle", "expectation",
     "minimum", "threshold", "maximum", "cap", "trigger", "triggers",
     "what happens when", "what should happen", "how much budget",
-    "budget should", "allocate", "allocation",
+    "budget should", "allocate", "allocation", "retention", "best for",
 ]
 DIAGNOSTIC_PATTERNS = [
     r"why did .* decline", r"why (is|are|did|has|have) .* (drop|fall|decreas|decline)",
@@ -220,11 +220,13 @@ def classify(query: str) -> QueryClassification:
         # 'What is the minimum ROAS for Search Ads?' => knowledge (asking about a guideline)
         has_numeric_ask = any(w in q_lower for w in ["highest", "lowest", "top", "how much",
                                                      "how many", "total", "which product",
-                                                     "which campaign", "which category"])
+                                                     "which campaign", "which category", "what was", "generates the most"])
         doc_focus = any(kw in q_lower for kw in ["policy", "policies", "pricing policy",
                                                   "guideline", "guidelines", "minimum",
                                                   "threshold", "standard", "rule", "should be",
-                                                  "should happen", "triggers"])
+                                                  "should happen", "triggers", "allowed", "maximum discount",
+                                                  "best for", "priority", "recommended", "four customer",
+                                                  "lifecycle segments"])
         if doc_focus and not has_numeric_ask:
             return QueryClassification(
                 query_type="knowledge",
