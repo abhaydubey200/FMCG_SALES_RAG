@@ -186,6 +186,18 @@ def _resolve_category(query: str) -> Optional[str]:
     return None
 
 
+REGION_NAMES = ["north", "south", "east", "west", "northeast", "northwest",
+                "southeast", "southwest", "central"]
+
+
+def _resolve_region(query: str) -> Optional[str]:
+    q_lower = query.lower()
+    for region in REGION_NAMES:
+        if re.search(r"\b" + re.escape(region) + r"\b", q_lower):
+            return region.capitalize()
+    return None
+
+
 def classify(query: str) -> QueryClassification:
     q_lower = query.lower()
 
@@ -212,18 +224,20 @@ def classify(query: str) -> QueryClassification:
     is_analytical = _keyword_hit(ANALYTICAL_KEYWORDS, q_lower)
     is_knowledge = _keyword_hit(KNOWLEDGE_KEYWORDS, q_lower)
 
+    region = _resolve_region(query)
+
     if is_diagnostic:
-        if not product and not category:
+        if not product and not category and not region:
             return QueryClassification(
                 query_type="ambiguous",
-                reason="Diagnostic question detected but no specific product or category could be resolved "
-                       "from the query — need a named product/category to investigate.",
+                reason="Diagnostic question detected but no specific product, category, or region could be resolved "
+                       "from the query — need a named entity to investigate.",
             )
         return QueryClassification(
             query_type="diagnostic", reason="Detected decline/drop/underperformance language requiring "
                                              "multi-source evidence (sales trend, discounts, marketing spend, reviews, strategy docs).",
             resolved_product=product, resolved_category=category,
-            signals={"is_analytical": is_analytical, "is_knowledge": is_knowledge},
+            signals={"is_analytical": is_analytical, "is_knowledge": is_knowledge, "resolved_region": region},
         )
 
     if is_analytical and is_knowledge:

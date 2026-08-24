@@ -138,6 +138,23 @@ class RAGPipeline:
         llm_response = llm.generate(prompt, system=prompt_templates.SYSTEM_INSTRUCTION)
         t_generate = time.time()
 
+        # Post-process: strip chain-of-thought blocks from reasoning models
+        # (e.g. NVIDIA Nemotron outputs "Here's a thinking process:" before the answer)
+        answer_text = llm_response.text
+        import re
+        # Match various thinking block patterns
+        thinking_patterns = [
+            r"Here'?s? (?:a |the )?thinking process[:\s]*(?:\n|\r).*?(?:\n\s*\n|$)",
+            r"Let me (?:analyze|think|consider|work through).*?(?:\n\s*\n|$)",
+        ]
+        for tp in thinking_patterns:
+            thinking_match = re.search(tp, answer_text, re.DOTALL | re.IGNORECASE)
+            if thinking_match:
+                after_thinking = answer_text[thinking_match.end():].strip()
+                if after_thinking and len(after_thinking) > 50:
+                    answer_text = after_thinking
+                    break
+
         sources = self._extract_sources(evidence)
 
         metrics = {

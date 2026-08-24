@@ -54,9 +54,12 @@ EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "tfidf")  # "tfidf" | "neural
 NEURAL_EMBEDDING_MODEL = os.getenv("NEURAL_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
 # --- LLM ---
-LLM_BACKEND = os.getenv("LLM_BACKEND", "fallback")  # "ollama" | "fallback"
+LLM_BACKEND = os.getenv("LLM_BACKEND", "fallback")  # "nvidia" | "ollama" | "fallback"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", 60))
 
 # --- API ---

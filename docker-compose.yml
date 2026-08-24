@@ -57,6 +57,10 @@ services:
       API_PORT: 8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_BACKEND: ${LLM_BACKEND:-fallback}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-tfidf}
     ports:
       - "${API_PORT:-8000}:8000"

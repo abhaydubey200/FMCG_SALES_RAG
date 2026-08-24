@@ -106,16 +106,25 @@ def build_evidence(question: str, classification: QueryClassification,
             structured["top_products_by_revenue"] = sql_layer.top_products_by_revenue(limit=5)
             structured["category_performance"] = sql_layer.category_performance()
 
-        if qtype == "diagnostic" and product:
-            pid = product["product_id"]
-            structured["decline_window_metrics"] = sql_layer.product_metrics(
-                pid, start_date="2025-04-01", end_date="2025-06-30")
-            structured["pre_decline_metrics"] = sql_layer.product_metrics(
-                pid, start_date="2025-01-01", end_date="2025-03-31")
-            structured["decline_window_reviews"] = sql_layer.review_summary(
-                pid, start_date="2025-04-01", end_date="2025-07-31")
-            structured["revenue_growth_q1_vs_q2_2025"] = sql_layer.revenue_growth(
-                pid, period_a=("2025-01-01", "2025-03-31"), period_b=("2025-04-01", "2025-06-30"))
+        if qtype == "diagnostic":
+            if product:
+                pid = product["product_id"]
+                structured["decline_window_metrics"] = sql_layer.product_metrics(
+                    pid, start_date="2025-04-01", end_date="2025-06-30")
+                structured["pre_decline_metrics"] = sql_layer.product_metrics(
+                    pid, start_date="2025-01-01", end_date="2025-03-31")
+                structured["decline_window_reviews"] = sql_layer.review_summary(
+                    pid, start_date="2025-04-01", end_date="2025-07-31")
+                structured["revenue_growth_q1_vs_q2_2025"] = sql_layer.revenue_growth(
+                    pid, period_a=("2025-01-01", "2025-03-31"), period_b=("2025-04-01", "2025-06-30"))
+            elif not category:
+                # Region-level diagnostic: provide region + campaign context
+                region = classification.signals.get("resolved_region") if classification.signals else None
+                structured["revenue_by_region"] = sql_layer.revenue_by_region()
+                structured["campaign_summary"] = sql_layer.campaign_summary()
+                if region:
+                    structured["resolved_region"] = region
+                    structured["category_performance"] = sql_layer.category_performance()
 
         evidence["structured_data"] = structured
 
