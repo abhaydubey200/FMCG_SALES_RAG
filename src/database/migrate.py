@@ -1,5 +1,5 @@
 """
-Database migration: creates schema on Supabase PostgreSQL and migrates data from SQLite.
+Database migration: creates schema on PostgreSQL and migrates data from SQLite.
 """
 import os
 import sqlite3
@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Supabase connection
+# postgreSQL connection
 # ═══════════════════════════════════════════════════════════════════════════
 
 def get_pg_conn():
@@ -233,7 +233,7 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_id ON embeddings(chunk_id);
 
 
 def create_schema(conn):
-    """Create all tables and indexes on Supabase."""
+    """Create all tables and indexes on postgreSQL."""
     cur = conn.cursor()
     cur.execute(SCHEMA_SQL)
     conn.commit()
@@ -258,7 +258,7 @@ def create_schema(conn):
 
 
 def migrate_data(conn):
-    """Migrate data from SQLite to Supabase PostgreSQL."""
+    """Migrate data from SQLite to PostgreSQL."""
     db_path = os.getenv("DB_PATH", "data/warehouse.db")
     if not Path(db_path).exists():
         print(f"SQLite not found at {db_path} — generating synthetic data first...")
@@ -327,7 +327,7 @@ def migrate_data(conn):
 
 
 def migrate_knowledge_base(conn):
-    """Migrate knowledge base documents and chunks into Supabase."""
+    """Migrate knowledge base documents and chunks into postgreSQL."""
     from src.ingestion.document_loader import load_knowledge_base
     chunks = load_knowledge_base()
     if not chunks:
@@ -455,7 +455,7 @@ def verify_migration(conn):
 
 
 if __name__ == "__main__":
-    print("Connecting to Supabase PostgreSQL...")
+    print("Connecting to PostgreSQL...")
     conn = get_pg_conn()
     
     print("\n1. Creating schema...")

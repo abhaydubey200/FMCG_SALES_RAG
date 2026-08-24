@@ -133,10 +133,23 @@ def invalidate_entity_cache():
     _entity_cache["categories"] = None
 
 
+def _cursor_to_dicts(cursor) -> list:
+    """Convert cursor rows to list of dicts, handling both sqlite3.Row and psycopg2 tuples."""
+    rows = cursor.fetchall()
+    if not rows:
+        return []
+    try:
+        return [dict(r) for r in rows]
+    except (TypeError, ValueError):
+        cols = [desc[0] for desc in cursor.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+
 def _cached_products() -> list:
     if _entity_cache["products"] is None:
         with sql_layer.get_conn() as conn:
-            rows = [dict(r) for r in conn.execute("SELECT product_id, product_name FROM products")]
+            cur = conn.execute("SELECT product_id, product_name FROM products")
+            rows = _cursor_to_dicts(cur)
         for r in rows:
             r["_name_lower"] = r["product_name"].lower()
             r["_name_words"] = [w for w in r["_name_lower"].split() if len(w) > 3]

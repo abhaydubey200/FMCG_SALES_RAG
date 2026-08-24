@@ -4,24 +4,26 @@ echo  Amazon RAG - Stopping services...
 echo ============================================
 echo.
 
-:: Kill uvicorn (FastAPI backend)
-echo Stopping FastAPI backend...
-taskkill /FI "WINDOWTITLE eq RAG-API*" /F >nul 2>&1
-taskkill /FI "IMAGENAME eq python.exe" /FI "WINDOWTITLE eq RAG-API*" /F >nul 2>&1
+:: Navigate to script directory
+cd /d "%~dp0"
 
-:: Kill streamlit (UI)
-echo Stopping Streamlit UI...
-taskkill /FI "WINDOWTITLE eq RAG-UI*" /F >nul 2>&1
-taskkill /FI "IMAGENAME eq streamlit.exe" /FI "WINDOWTITLE eq RAG-UI*" /F >nul 2>&1
+:: Stop Docker Compose services (preserves volumes/data)
+echo Stopping Docker Compose services...
+docker compose down
+if %ERRORLEVEL% neq 0 (
+    echo WARNING: docker compose down returned an error.
+    echo Attempting to stop containers individually...
+    docker compose stop
+)
 
-:: Also try to kill by port usage
-echo Cleaning up any remaining processes...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8501 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
+:: Also kill any lingering Streamlit processes (legacy cleanup)
+echo Cleaning up any legacy processes...
+taskkill /FI "IMAGENAME eq streamlit.exe" /F >nul 2>&1
 
 echo.
 echo ============================================
 echo  All services stopped.
+echo  Data volumes preserved (PostgreSQL, Redis).
 echo ============================================
 echo.
 pause

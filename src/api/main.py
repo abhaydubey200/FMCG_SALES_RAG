@@ -21,6 +21,55 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src import config
 from src.analytics import sql_layer
+
+
+def _fetchall(conn, query, params=None):
+    """Execute query and return list of dicts."""
+    cur = conn.cursor()
+    if params:
+        cur.execute(query, params)
+    else:
+        cur.execute(query)
+    rows = cur.fetchall()
+    if not rows:
+        return []
+    try:
+        return [dict(row) for row in rows]
+    except Exception:
+        # Fallback for psycopg2 tuples — use column names from cursor description
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+
+def _fetchone(conn, query, params=None):
+    """Execute query and return single dict or None."""
+    cur = conn.cursor()
+    if params:
+        cur.execute(query, params)
+    else:
+        cur.execute(query)
+    row = cur.fetchone()
+    if row is None:
+        return None
+    try:
+        return dict(row)
+    except Exception:
+        cols = [desc[0] for desc in cur.description]
+        return dict(zip(cols, row))
+
+
+def _to_dict(row, cursor=None):
+    """Convert a single row (psycopg2 or sqlite3) to a dict."""
+    if row is None:
+        return None
+    try:
+        return dict(row)
+    except Exception:
+        if cursor and cursor.description:
+            cols = [desc[0] for desc in cursor.description]
+            return dict(zip(cols, row))
+        return {}
+
 from src.api.schemas import (CampaignListItem, CategoryPerformance, CustomerSegment,
                               DashboardResponse, DeleteResponse, DocumentInfo,
                               EvaluationResult, MonthlyRevenueTrend, OverviewKPI,
@@ -184,16 +233,19 @@ def delete_document(document_id: str):
         raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
     path.unlink()
     _pipeline.reindex()
-    return DeleteResponse(document_id=document_id, deleted=True, message="Document removed and index rebuilt.")@app.get("/dashboard", response_model=DashboardResponse)
+    return DeleteResponse(document_id=document_id, deleted=True, message="Document removed and index rebuilt.")
+
+
+@app.get("/dashboard", response_model=DashboardResponse)
 def dashboard():
     with sql_layer.get_conn() as conn:
-        total_products = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-        total_revenue = conn.execute("SELECT COALESCE(SUM(revenue),0) FROM sales").fetchone()[0]
-        total_spend = conn.execute("SELECT COALESCE(SUM(spend),0) FROM campaigns").fetchone()[0]
-        total_customers = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
-        total_reviews = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
-        avg_roas_row = conn.execute(
-            "SELECT AVG(attributed_revenue * 1.0 / NULLIF(spend,0)) FROM campaigns").fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM products"); total_products = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(revenue),0) FROM sales"); total_revenue = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(spend),0) FROM campaigns"); total_spend = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM customers"); total_customers = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM reviews"); total_reviews = cur.fetchone()[0]
+        cur.execute("SELECT AVG(attributed_revenue * 1.0 / NULLIF(spend,0)) FROM campaigns"); avg_roas_row = cur.fetchone()[0]
     top = sql_layer.category_performance()
     top_category = top[0]["category"] if top else None
     return DashboardResponse(
@@ -223,31 +275,23 @@ def analytics_overview():
         gross_margin = (gross_profit / total_revenue * 100) if total_revenue else None
 
         # Previous period comparison (split at midpoint of date range)
-        min_date = conn.execute("SELECT MIN(order_date) FROM sales").fetchone()[0]
-        max_date = conn.execute("SELECT MAX(order_date) FROM sales").fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT MIN(order_date) FROM sales"); min_date = cur.fetchone()[0]
+        cur.execute("SELECT MAX(order_date) FROM sales"); max_date = cur.fetchone()[0]
         if min_date and max_date:
             from datetime import datetime
-            d1 = datetime.fromisoformat(min_date)
-            d2 = datetime.fromisoformat(max_date)
+            d1 = datetime.fromisoformat(str(min_date))
+            d2 = datetime.fromisoformat(str(max_date))
             mid = (d1 + (d2 - d1) / 2).strftime("%Y-%m-%d")
-            half_rev = conn.execute(
-                "SELECT COALESCE(SUM(revenue),0) FROM sales WHERE order_date >= ?", (mid,)).fetchone()[0]
-            half_units = conn.execute(
-                "SELECT COALESCE(SUM(quantity),0) FROM sales WHERE order_date >= ?", (mid,)).fetchone()[0]
-            half_spend = conn.execute(
-                "SELECT COALESCE(SUM(spend),0) FROM campaigns WHERE start_date >= ?", (mid,)).fetchone()[0]
-            half_roas = conn.execute(
-                "SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns WHERE start_date >= ?",
-                (mid,)).fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(revenue),0) FROM sales WHERE order_date >= %s", (mid,)); half_rev = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(quantity),0) FROM sales WHERE order_date >= %s", (mid,)); half_units = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(spend),0) FROM campaigns WHERE start_date >= %s", (mid,)); half_spend = cur.fetchone()[0]
+            cur.execute("SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns WHERE start_date >= %s", (mid,)); half_roas = cur.fetchone()[0]
             first_half_rev = total_revenue - half_rev
             first_half_units = total_units - half_units
             first_half_spend = total_spend - half_spend
-            first_half_roas = conn.execute(
-                "SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns WHERE start_date < ?",
-                (mid,)).fetchone()[0]
-            first_half_profit = conn.execute(
-                "SELECT COALESCE(SUM(s.revenue - s.cost),0) FROM sales s WHERE s.order_date < ?",
-                (mid,)).fetchone()[0]
+            cur.execute("SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns WHERE start_date < %s", (mid,)); first_half_roas = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(s.revenue - s.cost),0) FROM sales s WHERE s.order_date < %s", (mid,)); first_half_profit = cur.fetchone()[0]
             second_half_profit = gross_profit - first_half_profit
             first_half_margin = (first_half_profit / first_half_rev * 100) if first_half_rev else None
             second_half_margin = (second_half_profit / half_rev * 100) if half_rev else None
@@ -281,14 +325,14 @@ def analytics_overview():
 @app.get("/api/analytics/revenue-trend", response_model=list[MonthlyRevenueTrend])
 def revenue_trend():
     with sql_layer.get_conn() as conn:
-        rows = conn.execute("""
-            SELECT strftime('%Y-%m', order_date) AS month,
+        rows = _fetchall(conn, """
+            SELECT TO_CHAR(order_date, 'YYYY-MM') AS month,
                    SUM(revenue) AS revenue,
                    SUM(quantity) AS units_sold,
                    SUM(revenue - cost) AS profit
             FROM sales
             GROUP BY month ORDER BY month
-        """).fetchall()
+        """)
     return [MonthlyRevenueTrend(month=r["month"], revenue=round(r["revenue"], 2),
                                  units_sold=int(r["units_sold"]), profit=round(r["profit"], 2)) for r in rows]
 
@@ -299,12 +343,12 @@ def category_perf():
     result = []
     for c in cats:
         with sql_layer.get_conn() as conn:
-            camp = conn.execute("""
+            camp = _fetchone(conn, """
                 SELECT COUNT(*) as cnt, COALESCE(SUM(spend),0) as spend,
                        SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
                 FROM campaigns c JOIN products p ON c.product_id = p.product_id
-                WHERE p.category = ?
-            """, (c["category"],)).fetchone()
+                WHERE p.category = %s
+            """, (c["category"],))
         result.append(CategoryPerformance(
             category=c["category"], revenue=round(c["revenue"], 2),
             units_sold=int(c["units_sold"]), gross_profit=round(c["gross_profit"], 2),
@@ -333,18 +377,18 @@ def get_campaign(campaign_id: str):
 @app.get("/api/products", response_model=list[ProductListItem])
 def list_products():
     with sql_layer.get_conn() as conn:
-        products = [dict(r) for r in conn.execute("SELECT * FROM products").fetchall()]
-        sales_agg = [dict(r) for r in conn.execute("""
+        products = _fetchall(conn, "SELECT * FROM products")
+        sales_agg = _fetchall(conn, """
             SELECT product_id, SUM(revenue) as total_revenue, SUM(quantity) as total_units,
                    AVG(discount) as avg_discount
             FROM sales GROUP BY product_id
-        """).fetchall()]
+        """)
         sales_map = {s["product_id"]: s for s in sales_agg}
-        marketing = [dict(r) for r in conn.execute("""
+        marketing = _fetchall(conn, """
             SELECT product_id, SUM(spend) as total_spend,
                    SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
             FROM campaigns GROUP BY product_id
-        """).fetchall()]
+        """)
         marketing_map = {m["product_id"]: m for m in marketing}
     result = []
     for p in products:
@@ -462,16 +506,15 @@ def datahub_delete(dataset_id: str):
 @app.get("/api/analytics/reviews")
 def reviews_overview():
     with sql_layer.get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
-        avg_rating = conn.execute("SELECT AVG(rating) FROM reviews").fetchone()[0]
-        by_rating = [dict(r) for r in conn.execute(
-            "SELECT rating, COUNT(*) as count FROM reviews GROUP BY rating ORDER BY rating"
-        ).fetchall()]
-        negative = conn.execute("SELECT COUNT(*) FROM reviews WHERE rating <= 2").fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM reviews"); total = cur.fetchone()[0]
+        cur.execute("SELECT AVG(rating) FROM reviews"); avg_rating = cur.fetchone()[0]
+        by_rating = _fetchall(conn,
+            "SELECT rating, COUNT(*) as count FROM reviews GROUP BY rating ORDER BY rating")
+        cur.execute("SELECT COUNT(*) FROM reviews WHERE rating <= 2"); negative = cur.fetchone()[0]
         # Top negative themes (simple keyword extraction from negative reviews)
-        neg_reviews = [dict(r) for r in conn.execute(
-            "SELECT review_text FROM reviews WHERE rating <= 2 LIMIT 200"
-        ).fetchall()]
+        neg_reviews = _fetchall(conn,
+            "SELECT review_text FROM reviews WHERE rating <= 2 LIMIT 200")
         theme_keywords = {
             "battery": 0, "quality": 0, "delivery": 0, "packaging": 0,
             "customer service": 0, "broken": 0, "defective": 0, "slow": 0,
@@ -502,7 +545,7 @@ def reviews_overview():
 @app.get("/api/analytics/discounts")
 def discount_analytics():
     with sql_layer.get_conn() as conn:
-        bands = [dict(r) for r in conn.execute("""
+        bands = _fetchall(conn, """
             SELECT
                 CASE
                     WHEN discount = 0 THEN '0% (No discount)'
@@ -521,22 +564,23 @@ def discount_analytics():
             FROM sales
             GROUP BY discount_band
             ORDER BY MIN(discount)
-        """).fetchall()]
-        overall_avg = conn.execute("SELECT AVG(discount) FROM sales").fetchone()[0]
+        """)
+        cur = conn.cursor()
+        cur.execute("SELECT AVG(discount) FROM sales"); overall_avg = cur.fetchone()[0]
         # Correlation: avg margin by discount band
-        margin_by_band = [dict(r) for r in conn.execute("""
+        margin_by_band = _fetchall(conn, """
             SELECT
                 CASE
-                    WHEN discount = 0 THEN '0%'
-                    WHEN discount <= 5 THEN '1-5%'
-                    WHEN discount <= 10 THEN '5-10%'
-                    WHEN discount <= 15 THEN '10-15%'
-                    ELSE '15%+'
+                    WHEN discount = 0 THEN '0%%'
+                    WHEN discount <= 5 THEN '1-5%%'
+                    WHEN discount <= 10 THEN '5-10%%'
+                    WHEN discount <= 15 THEN '10-15%%'
+                    ELSE '15%%+'
                 END AS band,
                 ROUND(100.0 * AVG(revenue - cost) / NULLIF(AVG(revenue), 0), 2) AS avg_margin_pct
             FROM sales
             GROUP BY band ORDER BY MIN(discount)
-        """).fetchall()]
+        """)
     return {
         "overall_avg_discount": round(overall_avg, 2) if overall_avg else 0,
         "discount_bands": bands,
@@ -594,10 +638,12 @@ def system_health():
     try:
         t0 = time.time()
         with sql_layer.get_conn() as conn:
-            conn.execute("SELECT 1").fetchone()
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
         checks["database"] = {"status": "healthy", "latency_ms": round((time.time() - t0) * 1000, 2)}
     except Exception as e:
-        checks["database"] = {"status": "error", "error": str(e)}
+        checks["database"] = {"status": "error", "error": str(e)[:200]}
     # Vector Search
     try:
         t0 = time.time()
@@ -611,12 +657,27 @@ def system_health():
     # Redis
     try:
         import redis as _redis
+        import os as _os
         t0 = time.time()
-        r = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+        r = _redis.from_url(_os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
         r.ping()
         checks["redis"] = {"status": "healthy", "latency_ms": round((time.time() - t0) * 1000, 2)}
     except Exception as e:
         checks["redis"] = {"status": "not_configured", "message": str(e)[:100]}
+    # PostgreSQL
+    from src import config as _cfg
+    if _cfg.USE_POSTGRESQL:
+        try:
+            import psycopg2
+            t0 = time.time()
+            pg_conn = psycopg2.connect(_cfg.DATABASE_URL)
+            pg_conn.cursor().execute("SELECT 1")
+            pg_conn.close()
+            checks["postgresql"] = {"status": "healthy", "latency_ms": round((time.time() - t0) * 1000, 2), "url": _cfg.DATABASE_URL.split("@")[-1] if "@" in _cfg.DATABASE_URL else "configured"}
+        except Exception as e:
+            checks["postgresql"] = {"status": "error", "error": str(e)[:200]}
+    else:
+        checks["postgresql"] = {"status": "not_configured", "message": "Using SQLite fallback"}
     return checks
 
 
@@ -630,10 +691,10 @@ def generate_insights():
     insights = []
     with sql_layer.get_conn() as conn:
         # Revenue decline detection
-        trend = [dict(r) for r in conn.execute("""
-            SELECT strftime('%Y-%m', order_date) AS month, SUM(revenue) AS revenue
+        trend = _fetchall(conn, """
+            SELECT TO_CHAR(order_date, 'YYYY-MM') AS month, SUM(revenue) AS revenue
             FROM sales GROUP BY month ORDER BY month
-        """).fetchall()]
+        """)
         if len(trend) >= 3:
             last_3 = [t["revenue"] for t in trend[-3:]]
             if all(last_3[i] < last_3[i-1] for i in range(1, len(last_3))):
@@ -646,12 +707,12 @@ def generate_insights():
                 })
 
         # Low ROAS campaigns
-        low_roas = [dict(r) for r in conn.execute("""
+        low_roas = _fetchall(conn, """
             SELECT campaign_name, roas FROM (
                 SELECT campaign_name, SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
                 FROM campaigns GROUP BY campaign_name
-            ) WHERE roas < 3.0
-        """).fetchall()]
+            ) subq WHERE roas < 3.0
+        """)
         if low_roas:
             names = ", ".join(c["campaign_name"] for c in low_roas[:3])
             insights.append({
@@ -662,12 +723,12 @@ def generate_insights():
             })
 
         # High-margin products
-        high_margin = [dict(r) for r in conn.execute("""
+        high_margin = _fetchall(conn, """
             SELECT p.product_name, ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue), 0), 1) as margin
             FROM sales s JOIN products p ON s.product_id = p.product_id
-            GROUP BY p.product_id HAVING margin > 50
+            GROUP BY p.product_id HAVING ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue), 0), 1) > 50
             ORDER BY margin DESC LIMIT 3
-        """).fetchall()]
+        """)
         if high_margin:
             insights.append({
                 "type": "success", "title": "High-Margin Products",
@@ -677,12 +738,9 @@ def generate_insights():
             })
 
         # Customer segment opportunity
-        premium_ltv = conn.execute("""
-            SELECT AVG(lifetime_value) as ltv FROM customers WHERE segment = 'Premium'
-        """).fetchone()[0]
-        regular_ltv = conn.execute("""
-            SELECT AVG(lifetime_value) as ltv FROM customers WHERE segment = 'Regular'
-        """).fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT AVG(lifetime_value) as ltv FROM customers WHERE segment = 'Premium'"); premium_ltv = cur.fetchone()[0]
+        cur.execute("SELECT AVG(lifetime_value) as ltv FROM customers WHERE segment = 'Regular'"); regular_ltv = cur.fetchone()[0]
         if premium_ltv and regular_ltv and premium_ltv > regular_ltv * 2:
             insights.append({
                 "type": "info", "title": "Premium Customer Value",
@@ -698,38 +756,43 @@ def generate_insights():
 def executive_brief():
     """Generate a structured executive brief from the data."""
     with sql_layer.get_conn() as conn:
-        total_rev = conn.execute("SELECT SUM(revenue) FROM sales").fetchone()[0]
-        total_units = conn.execute("SELECT SUM(quantity) FROM sales").fetchone()[0]
-        total_spend = conn.execute("SELECT SUM(spend) FROM campaigns").fetchone()[0]
-        total_customers = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
-        avg_roas = conn.execute("SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns").fetchone()[0]
-        gross_profit = conn.execute("SELECT SUM(revenue - cost) FROM sales").fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(revenue) FROM sales"); total_rev = cur.fetchone()[0]
+        cur.execute("SELECT SUM(quantity) FROM sales"); total_units = cur.fetchone()[0]
+        cur.execute("SELECT SUM(spend) FROM campaigns"); total_spend = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM customers"); total_customers = cur.fetchone()[0]
+        cur.execute("SELECT SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) FROM campaigns"); avg_roas = cur.fetchone()[0]
+        cur.execute("SELECT SUM(revenue - cost) FROM sales"); gross_profit = cur.fetchone()[0]
         margin = round(100 * gross_profit / total_rev, 1) if total_rev else 0
 
         # Top category
-        top_cat = conn.execute("""
+        cur.execute("""
             SELECT p.category, SUM(s.revenue) as rev
             FROM sales s JOIN products p ON s.product_id = p.product_id
             GROUP BY p.category ORDER BY rev DESC LIMIT 1
-        """).fetchone()
+        """)
+        top_cat = cur.fetchone()
 
         # Top product
-        top_prod = conn.execute("""
+        cur.execute("""
             SELECT p.product_name, SUM(s.revenue) as rev
             FROM sales s JOIN products p ON s.product_id = p.product_id
             GROUP BY p.product_id ORDER BY rev DESC LIMIT 1
-        """).fetchone()
+        """)
+        top_prod = cur.fetchone()
 
         # Best campaign
-        best_camp = conn.execute("""
+        cur.execute("""
             SELECT campaign_name, SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
             FROM campaigns GROUP BY campaign_name ORDER BY roas DESC LIMIT 1
-        """).fetchone()
+        """)
+        best_camp = cur.fetchone()
 
         # Review sentiment
-        neg_pct = conn.execute("""
+        cur.execute("""
             SELECT ROUND(100.0 * COUNT(CASE WHEN rating <= 2 THEN 1 END) / COUNT(*), 1) FROM reviews
-        """).fetchone()[0]
+        """)
+        neg_pct = cur.fetchone()[0]
 
     sections = [
         {
@@ -742,7 +805,7 @@ def executive_brief():
         },
         {
             "title": "Risks",
-            "content": f"Negative review rate: {neg_pct}%. {len([1 for r in conn.execute('SELECT campaign_name FROM (SELECT campaign_name, SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas FROM campaigns GROUP BY campaign_name) WHERE roas < 3.0').fetchall()])} campaigns below 3.0x ROAS target.",
+            "content": f"Negative review rate: {neg_pct}%. {len(_fetchall(conn, 'SELECT campaign_name FROM (SELECT campaign_name, SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas FROM campaigns GROUP BY campaign_name) subq WHERE roas < 3.0'))} campaigns below 3.0x ROAS target.",
         },
         {
             "title": "Opportunities",
@@ -753,7 +816,7 @@ def executive_brief():
             "content": "1) Review underperforming campaign budgets. 2) Increase premium customer retention spend. 3) Investigate negative review themes for quality improvements. 4) Double down on high-margin product lines.",
         },
     ]
-    return {"sections": sections, "generated_at": datetime.now().isoformat() if 'datetime' in dir() else ""}
+    return {"sections": sections, "generated_at": datetime.now().isoformat()}
 
 
 # ---------------------------------------------------------------------------
@@ -767,61 +830,61 @@ def investigate_metric(metric: str):
         result = {"metric": metric, "breakdowns": {}, "trend": [], "top_entities": []}
         if metric == "revenue":
             # By category
-            cats = [dict(r) for r in conn.execute("""
+            cats = _fetchall(conn, """
                 SELECT p.category, SUM(s.revenue) as revenue, SUM(s.revenue - s.cost) as profit,
                        COUNT(*) as orders
                 FROM sales s JOIN products p ON s.product_id = p.product_id
                 GROUP BY p.category ORDER BY revenue DESC
-            """).fetchall()]
+            """)
             result["breakdowns"]["by_category"] = cats
             # By month trend
-            result["trend"] = [dict(r) for r in conn.execute("""
-                SELECT strftime('%Y-%m', order_date) AS month, SUM(revenue) AS revenue,
+            result["trend"] = _fetchall(conn, """
+                SELECT TO_CHAR(order_date, 'YYYY-MM') AS month, SUM(revenue) AS revenue,
                        SUM(quantity) AS units, SUM(revenue - cost) AS profit
                 FROM sales GROUP BY month ORDER BY month
-            """).fetchall()]
+            """)
             # Top products
-            result["top_entities"] = [dict(r) for r in conn.execute("""
+            result["top_entities"] = _fetchall(conn, """
                 SELECT p.product_name, p.category, SUM(s.revenue) as revenue
                 FROM sales s JOIN products p ON s.product_id = p.product_id
                 GROUP BY p.product_id ORDER BY revenue DESC LIMIT 10
-            """).fetchall()]
+            """)
         elif metric == "roas":
-            result["breakdowns"]["by_channel"] = [dict(r) for r in conn.execute("""
+            result["breakdowns"]["by_channel"] = _fetchall(conn, """
                 SELECT channel, COUNT(*) as campaigns, SUM(spend) as spend,
                        SUM(attributed_revenue) as revenue,
                        SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
                 FROM campaigns GROUP BY channel ORDER BY roas DESC
-            """).fetchall()]
-            result["top_entities"] = [dict(r) for r in conn.execute("""
+            """)
+            result["top_entities"] = _fetchall(conn, """
                 SELECT campaign_name, channel, SUM(spend) as spend,
                        SUM(attributed_revenue) as revenue,
                        SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas
                 FROM campaigns GROUP BY campaign_id ORDER BY roas DESC LIMIT 10
-            """).fetchall()]
+            """)
         elif metric == "margin":
-            result["breakdowns"]["by_category"] = [dict(r) for r in conn.execute("""
+            result["breakdowns"]["by_category"] = _fetchall(conn, """
                 SELECT p.category, SUM(s.revenue) as revenue, SUM(s.revenue - s.cost) as profit,
                        ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue),0), 1) as margin_pct
                 FROM sales s JOIN products p ON s.product_id = p.product_id
                 GROUP BY p.category ORDER BY margin_pct DESC
-            """).fetchall()]
-            result["top_entities"] = [dict(r) for r in conn.execute("""
+            """)
+            result["top_entities"] = _fetchall(conn, """
                 SELECT p.product_name, p.category,
                        ROUND(100.0 * SUM(s.revenue - s.cost) / NULLIF(SUM(s.revenue),0), 1) as margin_pct,
                        SUM(s.revenue) as revenue
                 FROM sales s JOIN products p ON s.product_id = p.product_id
-                GROUP BY p.product_id HAVING revenue > 10000
+                GROUP BY p.product_id HAVING SUM(s.revenue) > 10000
                 ORDER BY margin_pct DESC LIMIT 10
-            """).fetchall()]
+            """)
         elif metric == "customers":
-            result["breakdowns"]["by_segment"] = [dict(r) for r in conn.execute("""
+            result["breakdowns"]["by_segment"] = _fetchall(conn, """
                 SELECT segment, COUNT(*) as customers, AVG(lifetime_value) as avg_ltv,
                        SUM(lifetime_value) as total_ltv
                 FROM customers GROUP BY segment
-            """).fetchall()]
+            """)
         elif metric == "campaigns":
-            result["breakdowns"]["by_status"] = [dict(r) for r in conn.execute("""
+            result["breakdowns"]["by_status"] = _fetchall(conn, """
                 SELECT status, COUNT(*) as count FROM (
                     SELECT campaign_id,
                         CASE
@@ -831,62 +894,90 @@ def investigate_metric(metric: str):
                         END as status
                     FROM campaigns GROUP BY campaign_id
                 ) GROUP BY status
-            """).fetchall()]
-            result["top_entities"] = [dict(r) for r in conn.execute("""
+            """)
+            result["top_entities"] = _fetchall(conn, """
                 SELECT campaign_name, SUM(spend) as spend, SUM(attributed_revenue) as revenue,
                        SUM(attributed_revenue)*1.0/NULLIF(SUM(spend),0) as roas,
                        SUM(conversions) as conversions
                 FROM campaigns GROUP BY campaign_id ORDER BY roas DESC
-            """).fetchall()]
+            """)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Action & Outcome Tracking
+# Action & Outcome Tracking (PostgreSQL)
 # ---------------------------------------------------------------------------
-
-_actions: list = []  # In-memory store (would be database in production)
-_action_counter = 0
 
 @app.get("/api/actions")
 def list_actions():
-    return {"actions": _actions, "count": len(_actions)}
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, title, description, owner, status, source_insight, expected_outcome, actual_outcome, created_at, updated_at FROM actions ORDER BY created_at DESC")
+        cols = [desc[0] for desc in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # Serialize datetime objects
+        for r in rows:
+            for k in ("created_at", "updated_at"):
+                if r.get(k):
+                    r[k] = str(r[k])
+    return {"actions": rows, "count": len(rows)}
 
 @app.post("/api/actions")
 def create_action(action: dict):
-    global _action_counter
-    _action_counter += 1
-    new_action = {
-        "id": f"act_{_action_counter}",
-        "title": action.get("title", "Untitled Action"),
-        "description": action.get("description", ""),
-        "owner": action.get("owner", "Unassigned"),
-        "status": "open",
-        "source_insight": action.get("source_insight", ""),
-        "expected_outcome": action.get("expected_outcome", ""),
-        "actual_outcome": None,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    _actions.append(new_action)
-    return new_action
+    action_id = f"act_{uuid.uuid4().hex[:8]}"
+    now = datetime.now().isoformat()
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO actions (id, title, description, owner, status, source_insight, expected_outcome, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)""",
+                    (action_id, action.get("title", "Untitled Action"), action.get("description", ""),
+                     action.get("owner", "Unassigned"), action.get("source_insight", ""),
+                     action.get("expected_outcome", ""), now, now))
+        conn.commit()
+    return {"id": action_id, "title": action.get("title", "Untitled Action"),
+            "description": action.get("description", ""), "owner": action.get("owner", "Unassigned"),
+            "status": "open", "source_insight": action.get("source_insight", ""),
+            "expected_outcome": action.get("expected_outcome", ""),
+            "actual_outcome": None, "created_at": now, "updated_at": now}
 
 @app.put("/api/actions/{action_id}")
 def update_action(action_id: str, update: dict):
-    for a in _actions:
-        if a["id"] == action_id:
-            for k, v in update.items():
-                if k in ("title", "description", "owner", "status", "actual_outcome", "expected_outcome"):
-                    a[k] = v
-            a["updated_at"] = datetime.now().isoformat()
-            return a
-    raise HTTPException(status_code=404, detail="Action not found")
+    now = datetime.now().isoformat()
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM actions WHERE id = %s", (action_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Action not found")
+        allowed = ("title", "description", "owner", "status", "actual_outcome", "expected_outcome")
+        sets = []
+        params = []
+        for k, v in update.items():
+            if k in allowed:
+                sets.append(f"{k} = %s")
+                params.append(v)
+        if sets:
+            sets.append("updated_at = %s")
+            params.append(now)
+            params.append(action_id)
+            cur.execute(f"UPDATE actions SET {', '.join(sets)} WHERE id = %s", params)
+            conn.commit()
+        cur.execute("SELECT id, title, description, owner, status, source_insight, expected_outcome, actual_outcome, created_at, updated_at FROM actions WHERE id = %s", (action_id,))
+        row = dict(cur.fetchone())
+        for k in ("created_at", "updated_at"):
+            if row.get(k):
+                row[k] = str(row[k])
+        return row
 
 @app.delete("/api/actions/{action_id}")
 def delete_action(action_id: str):
-    global _actions
-    _actions = [a for a in _actions if a["id"] != action_id]
-    return {"deleted": True}
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM actions WHERE id = %s", (action_id,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+    if deleted:
+        return {"deleted": True}
+    raise HTTPException(status_code=404, detail="Action not found")
 
 
 # ---------------------------------------------------------------------------
@@ -944,12 +1035,15 @@ def data_quality():
         }
         total_checks = 0
         passed_checks = 0
+        cur = conn.cursor()
         for table, columns in tables.items():
-            total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            total = cur.fetchone()[0]
             table_report = {"total_rows": total, "checks": []}
             for col in columns:
                 try:
-                    nulls = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IS NULL OR {col} = ''").fetchone()[0]
+                    cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IS NULL OR {col} = ''")
+                    nulls = cur.fetchone()[0]
                     total_checks += 1
                     pct = round(100 * (total - nulls) / total, 1) if total > 0 else 100
                     passed = pct >= 90
@@ -962,15 +1056,16 @@ def data_quality():
                     pass
             # Duplicate check
             if "product_id" in columns:
-                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT product_id) FROM {table}").fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) - COUNT(DISTINCT product_id) FROM {table}")
             elif "customer_id" in columns:
-                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT customer_id) FROM {table}").fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) - COUNT(DISTINCT customer_id) FROM {table}")
             elif "review_id" in columns:
-                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT review_id) FROM {table}").fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) - COUNT(DISTINCT review_id) FROM {table}")
             elif "campaign_id" in columns:
-                dups = conn.execute(f"SELECT COUNT(*) - COUNT(DISTINCT campaign_id) FROM {table}").fetchone()[0]
+                cur.execute(f"SELECT COUNT(*) - COUNT(DISTINCT campaign_id) FROM {table}")
             else:
-                dups = 0
+                cur.execute("SELECT 0")
+            dups = cur.fetchone()[0]
             table_report["duplicate_count"] = dups
             report["tables"][table] = table_report
         report["overall_score"] = round(100 * passed_checks / total_checks, 1) if total_checks > 0 else 100
@@ -990,25 +1085,32 @@ def global_search(q: str = ""):
     results = []
     ql = q.lower()
     with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
         # Products
-        prods = [dict(r) for r in conn.execute(
-            "SELECT product_id, product_name, category FROM products WHERE product_name LIKE ? OR category LIKE ? LIMIT 5",
+        cur.execute(
+            "SELECT product_id, product_name, category FROM products WHERE product_name LIKE %s OR category LIKE %s LIMIT 5",
             (f"%{q}%", f"%{q}%")
-        ).fetchall()]
+        )
+        cols = [d[0] for d in cur.description]
+        prods = [dict(zip(cols, r)) for r in cur.fetchall()]
         for p in prods:
             results.append({"type": "product", "id": p["product_id"], "title": p["product_name"], "subtitle": p["category"]})
         # Campaigns
-        camps = [dict(r) for r in conn.execute(
-            "SELECT campaign_id, campaign_name, channel FROM campaigns WHERE campaign_name LIKE ? OR channel LIKE ? LIMIT 5",
+        cur.execute(
+            "SELECT campaign_id, campaign_name, channel FROM campaigns WHERE campaign_name LIKE %s OR channel LIKE %s LIMIT 5",
             (f"%{q}%", f"%{q}%")
-        ).fetchall()]
+        )
+        cols = [d[0] for d in cur.description]
+        camps = [dict(zip(cols, r)) for r in cur.fetchall()]
         for c in camps:
             results.append({"type": "campaign", "id": c["campaign_id"], "title": c["campaign_name"], "subtitle": c["channel"]})
         # Customers
-        custs = [dict(r) for r in conn.execute(
-            "SELECT customer_id, segment, region FROM customers WHERE segment LIKE ? OR region LIKE ? LIMIT 5",
+        cur.execute(
+            "SELECT customer_id, segment, region FROM customers WHERE segment LIKE %s OR region LIKE %s LIMIT 5",
             (f"%{q}%", f"%{q}%")
-        ).fetchall()]
+        )
+        cols = [d[0] for d in cur.description]
+        custs = [dict(zip(cols, r)) for r in cur.fetchall()]
         for c in custs:
             results.append({"type": "customer", "id": c["customer_id"], "title": f"{c['segment']} Customer", "subtitle": c["region"]})
     # Documents
@@ -1027,9 +1129,10 @@ def global_search(q: str = ""):
 def data_center():
     """Unified registry of all structured + unstructured data assets."""
     assets = []
-    # Structured assets from SQLite tables
+    # Structured assets from database tables
     try:
         with sql_layer.get_conn() as conn:
+            cur = conn.cursor()
             tables = {
                 "products": "product_id",
                 "sales": "order_id",
@@ -1038,14 +1141,15 @@ def data_center():
                 "reviews": "review_id",
             }
             for tbl, id_col in tables.items():
-                row = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()
+                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                row = cur.fetchone()
                 count = row[0] if row else 0
                 assets.append({
                     "id": f"structured_{tbl}",
                     "name": tbl.title(),
                     "type": "structured",
                     "category": "database",
-                    "source": "SQLite",
+                    "source": "PostgreSQL",
                     "status": "ready" if count > 0 else "empty",
                     "row_count": count,
                     "metadata": {"table": tbl, "id_column": id_col},
@@ -1104,81 +1208,115 @@ def data_center():
 
 
 # ---------------------------------------------------------------------------
-# Conversation Persistence
+# Conversation Persistence (PostgreSQL)
 # ---------------------------------------------------------------------------
 
-_conversations: dict = {}  # In-memory store
+import json
 
 
 @app.get("/api/conversations")
 def list_conversations():
-    convos = []
-    for cid, conv in _conversations.items():
-        messages = conv.get("messages", [])
-        title = messages[0]["content"][:80] if messages else "New Conversation"
-        convos.append({
-            "id": cid,
-            "title": title,
-            "message_count": len(messages),
-            "created_at": conv.get("created_at", ""),
-            "updated_at": conv.get("updated_at", ""),
-        })
-    convos.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC")
+        rows = cur.fetchall()
+        convos = []
+        for r in rows:
+            r = _to_dict(r, cur)
+            cur2 = conn.cursor()
+            cur2.execute("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = %s", (r["id"],))
+            msg_count = cur2.fetchone()[0]
+            convos.append({
+                "id": r["id"], "title": r["title"],
+                "message_count": msg_count,
+                "created_at": str(r["created_at"]), "updated_at": str(r["updated_at"]),
+            })
     return {"conversations": convos}
 
 
 @app.post("/api/conversations")
 def create_conversation():
     cid = f"conv_{uuid.uuid4().hex[:12]}"
-    _conversations[cid] = {
-        "id": cid,
-        "messages": [],
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
+    now = datetime.now().isoformat()
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conversations (id, title, created_at, updated_at) VALUES (%s, %s, %s, %s)",
+                    (cid, "New Conversation", now, now))
+        conn.commit()
     return {"id": cid, "message_count": 0}
 
 
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str):
-    if conversation_id not in _conversations:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return _conversations[conversation_id]
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, title, created_at, updated_at FROM conversations WHERE id = %s", (conversation_id,))
+        conv = cur.fetchone()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        conv = _to_dict(conv, cur)
+        cur.execute("SELECT role, content, result FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conversation_id,))
+        messages = []
+        for m in cur.fetchall():
+            m = _to_dict(m, cur)
+            result = None
+            if m.get("result"):
+                result = json.loads(m["result"]) if isinstance(m["result"], str) else m["result"]
+            messages.append({"role": m["role"], "content": m["content"], "result": result})
+        conv["messages"] = messages
+        return conv
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
 def add_message(conversation_id: str, message: dict):
-    if conversation_id not in _conversations:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    conv = _conversations[conversation_id]
     role = message.get("role", "user")
     content = message.get("content", "")
+    now = datetime.now().isoformat()
 
-    if role == "user":
-        conv["messages"].append({"role": "user", "content": content})
-        # Process the query
-        try:
-            result = _pipeline.answer(content)
-            result_dict = {
-                "answer": result.answer,
-                "query_type": result.query_type,
-                "sources": result.sources,
-                "metrics": result.metrics,
-                "evidence": result.evidence,
-            }
-            conv["messages"].append({"role": "assistant", "content": result.answer, "result": result_dict})
-        except Exception as e:
-            conv["messages"].append({"role": "assistant", "content": f"Error processing query: {e}"})
-    elif role == "assistant":
-        conv["messages"].append({"role": "assistant", "content": content, "result": message.get("result")})
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM conversations WHERE id = %s", (conversation_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
-    conv["updated_at"] = datetime.now().isoformat()
-    return conv
+        # Insert user message
+        cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                    (conversation_id, role, content))
+
+        if role == "user":
+            # Process the query
+            try:
+                result = _pipeline.answer(content)
+                result_dict = {
+                    "answer": result.answer, "query_type": result.query_type,
+                    "sources": result.sources, "metrics": result.metrics,
+                    "evidence": result.evidence,
+                }
+                cur.execute("INSERT INTO conversation_messages (conversation_id, role, content, result) VALUES (%s, %s, %s, %s)",
+                            (conversation_id, "assistant", result.answer, json.dumps(result_dict, default=str)))
+            except Exception as e:
+                cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                            (conversation_id, "assistant", f"Error processing query: {e}"))
+        elif role == "assistant":
+            result_json = json.dumps(message.get("result"), default=str) if message.get("result") else None
+            cur.execute("INSERT INTO conversation_messages (conversation_id, role, content, result) VALUES (%s, %s, %s, %s)",
+                        (conversation_id, role, content, result_json))
+
+        cur.execute("UPDATE conversations SET updated_at = %s WHERE id = %s", (now, conversation_id))
+        conn.commit()
+
+    # Return the full conversation
+    return get_conversation(conversation_id)
 
 
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str):
-    if conversation_id in _conversations:
-        del _conversations[conversation_id]
+    with sql_layer.get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM conversation_messages WHERE conversation_id = %s", (conversation_id,))
+        cur.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+    if deleted:
         return {"deleted": True}
     raise HTTPException(status_code=404, detail="Conversation not found")

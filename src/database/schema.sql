@@ -1,6 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════
--- Amazon Sales & Marketing Intelligence Platform — Supabase Schema
--- Run this in: Supabase Dashboard > SQL Editor
+-- Sales & Marketing Intelligence Platform — PostgreSQL Schema
 -- ═══════════════════════════════════════════════════════════════════
 
 -- Extensions
@@ -79,7 +78,7 @@ CREATE TABLE IF NOT EXISTS documents (
     document_type TEXT,
     file_path TEXT,
     chunk_count INTEGER DEFAULT 0,
-    storage_path TEXT,
+    status TEXT DEFAULT 'ready',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -191,6 +190,45 @@ CREATE TABLE IF NOT EXISTS insights (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- CONVERSATIONS (persistent — replaces in-memory store)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT DEFAULT 'New Conversation',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id SERIAL PRIMARY KEY,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    result JSONB,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conversation_messages(conversation_id);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- ACTIONS (persistent — replaces in-memory store)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS actions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    owner TEXT DEFAULT 'Unassigned',
+    status TEXT DEFAULT 'open',
+    source_insight TEXT DEFAULT '',
+    expected_outcome TEXT DEFAULT '',
+    actual_outcome TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- EVALUATION
 -- ═══════════════════════════════════════════════════════════════════════
 
@@ -232,88 +270,22 @@ CREATE TABLE IF NOT EXISTS system_events (
 -- INDEXES
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE INDEX IF NOT EXISTS idx_sales_product ON sales(product_id);
-CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(order_date);
-CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
-CREATE INDEX IF NOT EXISTS idx_campaigns_product ON campaigns(product_id);
+CREATE INDEX IF NOT EXISTS idx_sales_product_id ON sales(product_id);
+CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date);
+CREATE INDEX IF NOT EXISTS idx_sales_customer_id ON sales(customer_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_product_id ON campaigns(product_id);
 CREATE INDEX IF NOT EXISTS idx_campaigns_channel ON campaigns(channel);
-CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_product_id ON reviews(product_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
-CREATE INDEX IF NOT EXISTS idx_chunks_document ON document_chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_chunk ON embeddings(chunk_id);
-CREATE INDEX IF NOT EXISTS idx_datasets_id ON datasets(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_id ON embeddings(chunk_id);
 
--- Vector similarity index
+-- Vector similarity index (IVFFlat for pgvector)
 DO $$ BEGIN
     CREATE INDEX idx_embeddings_vector ON embeddings
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 10);
 EXCEPTION WHEN others THEN NULL;
 END $$;
-
--- ═══════════════════════════════════════════════════════════════════════
--- ROW LEVEL SECURITY
--- ═══════════════════════════════════════════════════════════════════════
-
--- Enable RLS on all tables
-ALTER TABLE products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
-ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
-ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE document_chunks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE datasets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dataset_columns ENABLE ROW LEVEL SECURITY;
-ALTER TABLE data_quality_results ENABLE ROW LEVEL SECURITY;
-ALTER TABLE semantic_metrics ENABLE ROW LEVEL SECURITY;
-ALTER TABLE semantic_dimensions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE queries ENABLE ROW LEVEL SECURITY;
-ALTER TABLE insights ENABLE ROW LEVEL SECURITY;
-ALTER TABLE evaluation_cases ENABLE ROW LEVEL SECURITY;
-ALTER TABLE evaluation_runs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE system_events ENABLE ROW LEVEL SECURITY;
-
--- Policies: allow authenticated users full read/write
--- (In production, restrict by workspace_id)
-CREATE POLICY "Allow authenticated read" ON products FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON sales FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON customers FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON campaigns FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON reviews FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON documents FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON document_chunks FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON embeddings FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON datasets FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON dataset_columns FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON data_quality_results FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON semantic_metrics FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON semantic_dimensions FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON queries FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON insights FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON evaluation_cases FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON evaluation_runs FOR SELECT USING (true);
-CREATE POLICY "Allow authenticated read" ON system_events FOR SELECT USING (true);
-
--- Service role bypass (backend uses secret key)
-CREATE POLICY "Service role all" ON products FOR ALL USING (true);
-CREATE POLICY "Service role all" ON sales FOR ALL USING (true);
-CREATE POLICY "Service role all" ON customers FOR ALL USING (true);
-CREATE POLICY "Service role all" ON campaigns FOR ALL USING (true);
-CREATE POLICY "Service role all" ON reviews FOR ALL USING (true);
-CREATE POLICY "Service role all" ON documents FOR ALL USING (true);
-CREATE POLICY "Service role all" ON document_chunks FOR ALL USING (true);
-CREATE POLICY "Service role all" ON embeddings FOR ALL USING (true);
-CREATE POLICY "Service role all" ON datasets FOR ALL USING (true);
-CREATE POLICY "Service role all" ON dataset_columns FOR ALL USING (true);
-CREATE POLICY "Service role all" ON data_quality_results FOR ALL USING (true);
-CREATE POLICY "Service role all" ON semantic_metrics FOR ALL USING (true);
-CREATE POLICY "Service role all" ON semantic_dimensions FOR ALL USING (true);
-CREATE POLICY "Service role all" ON queries FOR ALL USING (true);
-CREATE POLICY "Service role all" ON insights FOR ALL USING (true);
-CREATE POLICY "Service role all" ON evaluation_cases FOR ALL USING (true);
-CREATE POLICY "Service role all" ON evaluation_runs FOR ALL USING (true);
-CREATE POLICY "Service role all" ON system_events FOR ALL USING (true);
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INITIAL DATA: Semantic Layer

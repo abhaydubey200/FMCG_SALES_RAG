@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ── PostgreSQL + pgvector ──
   postgres:
@@ -53,11 +51,13 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://ragsql:ragsql_secret_dev@postgres:5432/ragsql
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ragsql}:${POSTGRES_PASSWORD:-ragsql_secret_dev}@postgres:5432/${POSTGRES_DB:-ragsql}
       REDIS_URL: redis://redis:6379/0
       API_HOST: 0.0.0.0
       API_PORT: 8000
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LLM_BACKEND: ${LLM_BACKEND:-fallback}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-tfidf}
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
@@ -76,13 +76,13 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://ragsql:ragsql_secret_dev@postgres:5432/ragsql
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ragsql}:${POSTGRES_PASSWORD:-ragsql_secret_dev}@postgres:5432/${POSTGRES_DB:-ragsql}
       REDIS_URL: redis://redis:6379/0
-      LOG_LEVEL: INFO
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - ragsql-net
 
-  # ── Streamlit Frontend ──
+  # ── Next.js Frontend ──
   frontend:
     build:
       context: .
@@ -92,9 +92,9 @@ services:
     depends_on:
       - api
     environment:
-      API_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: http://api:8000
     ports:
-      - "${FRONTEND_PORT:-8501}:8501"
+      - "${FRONTEND_PORT:-3000}:3000"
     networks:
       - ragsql-net
 

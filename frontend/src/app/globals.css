@@ -1,0 +1,186 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid #6366f1;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .kpi-card {
+    @apply bg-white border border-slate-200 rounded-lg p-4;
+  }
+
+  .kpi-label {
+    @apply text-[0.65rem] uppercase tracking-wider text-slate-400 font-semibold;
+  }
+
+  .kpi-value {
+    @apply text-2xl font-bold text-slate-900 leading-tight mt-0.5;
+  }
+
+  .kpi-delta {
+    @apply text-xs font-semibold mt-1;
+  }
+
+  .card {
+    @apply bg-white border border-slate-200 rounded-lg p-4 transition-shadow;
+  }
+
+  .card:hover {
+    @apply shadow-sm;
+  }
+
+  .card-header {
+    @apply text-sm font-semibold text-slate-900 mb-1;
+  }
+
+  .card-body {
+    @apply text-sm text-slate-600 leading-relaxed;
+  }
+
+  .card-meta {
+    @apply text-xs text-slate-400 mt-2 flex gap-4;
+  }
+
+  .section-title {
+    @apply text-sm font-bold text-slate-900 pb-2 mb-4 border-b-2 border-slate-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-[0.65rem] font-semibold gap-1;
+  }
+
+  .badge-brand {
+    @apply bg-brand-50 text-brand-700 border border-brand-200;
+  }
+
+  .badge-success {
+    @apply bg-emerald-50 text-emerald-700 border border-emerald-200;
+  }
+
+  .badge-warning {
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
+  }
+
+  .badge-danger {
+    @apply bg-rose-50 text-rose-700 border border-rose-200;
+  }
+
+  .badge-neutral {
+    @apply bg-slate-100 text-slate-600 border border-slate-200;
+  }
+
+  .badge-violet {
+    @apply bg-violet-50 text-violet-700 border border-violet-200;
+  }
+
+  .empty-state {
+    @apply text-center py-16 px-8 text-slate-400;
+  }
+
+  .empty-state-icon {
+    @apply text-5xl mb-3;
+  }
+
+  .empty-state-title {
+    @apply text-base font-semibold text-slate-900 mb-1;
+  }
+
+  .empty-state-desc {
+    @apply text-sm text-slate-500 max-w-md mx-auto;
+  }
+
+  .msg-user {
+    @apply bg-slate-100 rounded-lg px-4 py-3 text-sm leading-relaxed;
+  }
+
+  .msg-ai {
+    @apply bg-white border border-slate-200 rounded-lg px-4 py-3 text-sm leading-relaxed;
+  }
+
+  .evidence-item {
+    @apply py-2 border-b border-slate-100 text-sm;
+  }
+
+  .evidence-item:last-child {
+    @apply border-b-0;
+  }
+
+  .quality-bar {
+    @apply h-1.5 bg-slate-100 rounded-full overflow-hidden;
+  }
+
+  .quality-fill {
+    @apply h-full rounded-full transition-all duration-500;
+  }
+
+  .quality-good {
+    @apply bg-emerald-500;
+  }
+
+  .quality-ok {
+    @apply bg-amber-500;
+  }
+
+  .quality-bad {
+    @apply bg-rose-500;
+  }
+
+  .code-block {
+    @apply bg-slate-50 border border-slate-200 rounded-lg p-4 font-mono text-sm text-slate-800 overflow-x-auto;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

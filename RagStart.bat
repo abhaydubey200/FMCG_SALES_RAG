@@ -1,57 +1,73 @@
 @echo off
 echo ============================================
 echo  Amazon RAG - Sales & Marketing Intelligence
-echo  Starting services...
+echo  Starting services via Docker Compose...
 echo ============================================
 echo.
 
 :: Navigate to script directory
 cd /d "%~dp0"
 
-:: Check if data exists, if not generate it
-if not exist "data\warehouse.db" (
-    echo [1/3] Generating synthetic dataset...
-    set PYTHONPATH=.
-    python src\ingestion\data_generator.py
-) else (
-    echo [1/3] Dataset already exists, skipping generation.
+:: Check Docker is available
+where docker >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Docker is not installed or not in PATH.
+    echo Please install Docker Desktop: https://docs.docker.com/get-docker/
+    pause
+    exit /b 1
 )
 
-:: Check if vector store exists, if not build it
-if not exist "data\vector_store.pkl" (
-    echo [2/3] Building vector store...
-    set PYTHONPATH=.
-    python -c "from src.retrieval.vector_store import build_and_persist_vector_store; build_and_persist_vector_store()"
-) else (
-    echo [2/3] Vector store already exists, skipping build.
+:: Check Docker daemon is running
+docker info >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Docker daemon is not running.
+    echo Please start Docker Desktop and try again.
+    pause
+    exit /b 1
 )
 
 :: Create .env if missing
 if not exist ".env" (
-    echo [3/3] Creating .env from template...
+    echo [1/4] Creating .env from template...
     copy .env.example .env >nul 2>&1
 ) else (
-    echo [3/3] .env already exists.
+    echo [1/4] .env already exists.
 )
 
-echo.
-echo Starting FastAPI backend on port 8000...
-start "RAG-API" cmd /k "set PYTHONPATH=. && python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"
-ping 127.0.0.1 -n 4 >nul
+echo [2/4] Building and starting Docker containers...
+docker compose up -d --build
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Docker Compose failed to start. Check the output above.
+    pause
+    exit /b 1
+)
 
-:: Wait for API to be ready
-echo Waiting for API to start...
-timeout /t 5 /nobreak >nul
+echo [3/4] Waiting for services to be healthy...
+set /a RETRY=0
+:WAIT_LOOP
+set /a RETRY+=1
+if %RETRY% gtr 30 (
+    echo WARNING: Services may not be fully healthy after 60 seconds.
+    echo Check: docker compose ps
+    goto SHOW_STATUS
+)
+curl -s http://localhost:8000/health >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    timeout /t 2 /nobreak >nul
+    goto WAIT_LOOP
+)
+echo        API is healthy.
 
-echo Starting Streamlit UI on port 8501...
-start "RAG-UI" cmd /k "set API_BASE_URL=http://localhost:8000 && python -m streamlit run ui/streamlit_app.py"
+:SHOW_STATUS
+echo [4/4] Service status:
+docker compose ps
 
 echo.
 echo ============================================
 echo  Services started!
-echo    API:    http://localhost:8000
-echo    UI:     http://localhost:8501
-echo    Docs:   http://localhost:8000/docs
+echo    API:      http://localhost:8000
+echo    Frontend: http://localhost:3000
+echo    Docs:     http://localhost:8000/docs
 echo ============================================
 echo.
 echo Press any key to exit this window (services keep running)...
