@@ -11,8 +11,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt psycopg2-binary asyncpg pymupdf
 
 COPY src/ src/
-COPY data/knowledge_base/ data/knowledge_base/
+
+# Ensure knowledge_base directory exists (empty by default — users upload their own docs)
+RUN mkdir -p data/knowledge_base
 
 EXPOSE 8000
 
-CMD ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migration before starting the API
+CMD ["sh", "-c", "python -m src.database.migrate_dynamic 2>/dev/null; python -m src.database.migrate_persistence 2>/dev/null; python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"]

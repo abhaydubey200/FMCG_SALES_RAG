@@ -73,10 +73,6 @@ FUTURE_KEYWORDS = [
 # though it's phrased in the present tense).
 NO_DATA_SOURCE_KEYWORDS = ["competitor", "competitors", "ceo", "board of directors", "leadership team"]
 
-CATEGORY_NAMES = ["electronics", "home & kitchen", "home and kitchen", "fashion", "beauty",
-                   "sports & outdoors", "sports and outdoors", "toys & games", "toys and games",
-                   "books", "grocery"]
-
 
 def _keyword_hit(keywords: list, text: str) -> bool:
     """
@@ -146,35 +142,86 @@ def _cursor_to_dicts(cursor) -> list:
 
 
 def _cached_products() -> list:
+    """Cache product entities from workspace data (dynamic, not legacy tables)."""
     if _entity_cache["products"] is None:
-        with sql_layer.get_conn() as conn:
-            cur = conn.execute("SELECT product_id, product_name FROM products")
-            rows = _cursor_to_dicts(cur)
-        for r in rows:
-            r["_name_lower"] = r["product_name"].lower()
-            r["_name_words"] = [w for w in r["_name_lower"].split() if len(w) > 3]
-        _entity_cache["products"] = rows
+        try:
+            from src.analytics.dynamic_engine import discover_available_data
+            data = discover_available_data()
+            rows = []
+            # Try to find product-like dimensions from semantic mappings
+            prod_entries = data.get("available_dimensions", {}).get("product", [])
+            for entry in prod_entries:
+                table = entry["table"]
+                col = entry["column"]
+                try:
+                    from src.analytics.dynamic_engine import _get_pg_connection, _sanitize_sql_identifier
+                    _sanitize_sql_identifier(table)
+                    _sanitize_sql_identifier(col)
+                    conn = _get_pg_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(f'SELECT DISTINCT "{col}" FROM "{table}" WHERE "{col}" IS NOT NULL LIMIT 200')
+                        for r in cur.fetchall():
+                            name = str(r[0]) if r[0] else ""
+                            if name:
+                                rows.append({"product_id": name, "product_name": name,
+                                             "_name_lower": name.lower(),
+                                             "_name_words": [w for w in name.lower().split() if len(w) > 3]})
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            _entity_cache["products"] = rows
+        except Exception:
+            _entity_cache["products"] = []
     return _entity_cache["products"]
 
 
 def _cached_categories() -> list:
+    """Cache category entities from workspace data (dynamic, not legacy tables)."""
     if _entity_cache["categories"] is None:
-        _entity_cache["categories"] = sql_layer.list_categories()
+        try:
+            from src.analytics.dynamic_engine import discover_available_data
+            data = discover_available_data()
+            cats = []
+            cat_entries = data.get("available_dimensions", {}).get("category", [])
+            for entry in cat_entries:
+                table = entry["table"]
+                col = entry["column"]
+                try:
+                    from src.analytics.dynamic_engine import _get_pg_connection, _sanitize_sql_identifier
+                    _sanitize_sql_identifier(table)
+                    _sanitize_sql_identifier(col)
+                    conn = _get_pg_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(f'SELECT DISTINCT "{col}" FROM "{table}" WHERE "{col}" IS NOT NULL LIMIT 100')
+                        for r in cur.fetchall():
+                            if r[0]:
+                                cats.append(str(r[0]))
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            _entity_cache["categories"] = cats
+        except Exception:
+            _entity_cache["categories"] = []
     return _entity_cache["categories"]
 
 
 def _resolve_product(query: str) -> Optional[dict]:
     rows = _cached_products()
+    if not rows:
+        return None
     q_lower = query.lower()
     matches = [r for r in rows if r["_name_lower"] in q_lower]
     if len(matches) == 1:
-        return sql_layer.get_product(matches[0]["product_id"])
+        return {"product_id": matches[0]["product_id"], "product_name": matches[0]["product_name"]}
     if len(matches) > 1:
-        return None  # ambiguous — more than one product name found in query
-    # fuzzy: try partial word overlap for named products (2+ significant words)
+        return None
     for r in rows:
         if r["_name_words"] and all(w in q_lower for w in r["_name_words"]):
-            return sql_layer.get_product(r["product_id"])
+            return {"product_id": r["product_id"], "product_name": r["product_name"]}
     return None
 
 

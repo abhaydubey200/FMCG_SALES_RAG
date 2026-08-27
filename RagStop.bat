@@ -1,6 +1,7 @@
 @echo off
 echo ============================================
-echo  Amazon RAG - Stopping services...
+echo  Sales & Marketing Intelligence Platform
+echo  Stopping services...
 echo ============================================
 echo.
 
@@ -16,14 +17,16 @@ if %ERRORLEVEL% neq 0 (
     docker compose stop
 )
 
-:: Also kill any lingering Streamlit processes (legacy cleanup)
-echo Cleaning up any legacy processes...
-taskkill /FI "IMAGENAME eq streamlit.exe" /F >nul 2>&1
-
 echo.
 echo ============================================
 echo  All services stopped.
-echo  Data volumes preserved (PostgreSQL, Redis).
+echo  Data volumes preserved:
+echo    - PostgreSQL data (uploaded datasets, semantic mappings)
+echo    - Redis cache
+echo    - Knowledge base documents
 echo ============================================
+echo.
+echo To restart: double-click RagStart.bat
+echo To remove ALL data: docker compose down -v
 echo.
 pause

@@ -83,6 +83,137 @@ export const sendQuery = (question: string) =>
     body: JSON.stringify({ question }),
   });
 
+// Query (streaming)
+export type StreamEvent =
+  | { type: "metadata"; query_type: string; classification_reason: string; sources: Array<{ type: string; source: string }>; visualization: Record<string, unknown> }
+  | { type: "token"; content: string }
+  | { type: "done"; answer: string; metrics: Record<string, unknown>; visualization: Record<string, unknown> }
+  | { type: "error"; error: string };
+
+export async function* sendQueryStream(question: string): AsyncGenerator<StreamEvent> {
+  const url = `${API_BASE}/query/stream`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text().catch(() => "");
+    throw new Error(`API error ${res.status}: ${res.statusText}${errorBody ? ` - ${errorBody}` : ""}`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE events from buffer
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || ""; // keep incomplete event in buffer
+
+    for (const eventBlock of events) {
+      let eventType = "message";
+      let data = "";
+
+      for (const line of eventBlock.split("\n")) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          data = line.slice(6);
+        }
+      }
+
+      if (!data) continue;
+
+      try {
+        const parsed = JSON.parse(data);
+        yield { type: eventType, ...parsed } as StreamEvent;
+      } catch {
+        // skip malformed events
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Agentic AI — multi-specialist orchestrator endpoints
+// ---------------------------------------------------------------------------
+
+export const aiQuery = (question: string) =>
+  request<{
+    answer: string;
+    sources: Array<{ type: string; source: string }>;
+    metrics: Record<string, unknown>;
+    evidence: Record<string, unknown>;
+    visualization?: Record<string, unknown>;
+  }>("/api/ai/query", {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+
+export async function* aiQueryStream(question: string): AsyncGenerator<StreamEvent> {
+  const url = `${API_BASE}/api/ai/query/stream`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text().catch(() => "");
+    throw new Error(`API error ${res.status}: ${res.statusText}${errorBody ? ` - ${errorBody}` : ""}`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+
+    for (const eventBlock of events) {
+      let eventType = "message";
+      let data = "";
+      for (const line of eventBlock.split("\n")) {
+        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data = line.slice(6);
+      }
+      if (!data) continue;
+      try {
+        const parsed = JSON.parse(data);
+        yield { type: eventType, ...parsed } as StreamEvent;
+      } catch { /* skip */ }
+    }
+  }
+}
+
+export const listAIAgents = () =>
+  request<{ agents: Array<{ agent_id: string; name: string; description: string; domain: string; capabilities: string[]; version: string }>; count: number }>("/api/ai/agents");
+
+export const listAISkills = () =>
+  request<{ skills: Array<{ skill_id: string; name: string; description: string; required_tools: string[]; output_type: string; version: string }>; count: number }>("/api/ai/skills");
+
+export const listAITools = () =>
+  request<{ tools: Array<{ tool_id: string; name: string; description: string; category: string; version: string }>; categories: Record<string, string[]>; count: number }>("/api/ai/tools");
+
+export const getAgentsHealth = () =>
+  request<{ agents: Array<{ agent_id: string; status: string; version: string; executions: number; errors: number; avg_latency_ms: number }> }>("/api/ai/agents/health");
+
 // Documents
 export const listDocuments = () =>
   request<Array<{
@@ -414,6 +545,11 @@ export const getDataCenter = () =>
     structured_count: number;
     unstructured_count: number;
   }>("/api/data-center");
+
+export const deleteDataCenterAsset = (assetId: string) =>
+  request<{ deleted: boolean; type: string }>(`/api/data-center/${assetId}`,
+    { method: "DELETE" }
+  );
 
 // Global Search
 export const globalSearch = (q: string) =>

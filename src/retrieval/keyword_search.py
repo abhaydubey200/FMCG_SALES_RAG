@@ -35,6 +35,9 @@ class KeywordIndex:
 
     def build(self, chunks: List[Chunk]):
         self.chunks = chunks
+        if not chunks:
+            self.bm25 = None
+            return
         tokenized = [_tokenize(c.text) for c in chunks]
         self.bm25 = BM25Okapi(tokenized)
 

@@ -245,3 +245,18 @@ class FallbackLLM(BaseLLM):
         latency_ms = (time.time() - start) * 1000
         return LLMResponse(text=text, model_name="template-grounded-fallback-v1",
                             backend="fallback", latency_ms=latency_ms)
+
+    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 700):
+        """Stream the fallback response word by word for consistent UX."""
+        import time as _time
+        evidence = _extract_evidence(prompt)
+        qtype = evidence.get("query_type", "knowledge")
+        renderer = RENDERERS.get(qtype, _render_knowledge)
+        text = renderer(evidence)
+        words = text.split(" ")
+        for i, word in enumerate(words):
+            prefix = " " if i > 0 else ""
+            yield prefix + word
+            # Small delay to simulate streaming feel
+            if i % 5 == 0:
+                _time.sleep(0.01)

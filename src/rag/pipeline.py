@@ -11,7 +11,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Iterator, List
 
 from src import config
 from src.ingestion.document_loader import load_knowledge_base
@@ -189,6 +189,90 @@ class RAGPipeline:
         # silently assumed away.
         self._cache.put(question, result)
         return result
+
+    def answer_stream(self, question: str) -> Iterator[dict]:
+        """Stream the answer, yielding events as dicts.
+        
+        Yields events:
+        - {"type": "metadata", "query_type": ..., "sources": ...}
+        - {"type": "token", "content": ...}
+        - {"type": "done", "metrics": ..., "visualization": ...}
+        """
+        t0 = time.time()
+
+        classification = classify(question)
+        t_classify = time.time()
+
+        evidence = build_evidence(question, classification, self.retriever)
+        t_retrieve = time.time()
+
+        sources = self._extract_sources(evidence)
+
+        from src.rag.visualization_planner import plan_visualization
+        viz = plan_visualization(question, evidence, classification.query_type)
+
+        # Send metadata first
+        yield {
+            "type": "metadata",
+            "query_type": classification.query_type,
+            "classification_reason": classification.reason,
+            "sources": sources,
+            "visualization": viz,
+        }
+
+        # Stream LLM tokens
+        prompt = prompt_templates.build_prompt(question, classification.query_type, evidence)
+        llm = get_llm()
+        full_text = ""
+        for token in llm.generate_stream(prompt, system=prompt_templates.SYSTEM_INSTRUCTION):
+            full_text += token
+            yield {"type": "token", "content": token}
+
+        t_generate = time.time()
+
+        # Post-process: strip thinking blocks
+        import re
+        thinking_patterns = [
+            r"Here'?s? (?:a |the )?thinking process[:\s]*(?:\n|\r).*?(?:\n\s*\n|$)",
+            r"Let me (?:analyze|think|consider|work through).*?(?:\n\s*\n|$)",
+        ]
+        answer_text = full_text
+        for tp in thinking_patterns:
+            thinking_match = re.search(tp, answer_text, re.DOTALL | re.IGNORECASE)
+            if thinking_match:
+                after_thinking = answer_text[thinking_match.end():].strip()
+                if after_thinking and len(after_thinking) > 50:
+                    answer_text = after_thinking
+                    break
+
+        metrics = {
+            "query_type": classification.query_type,
+            "classification_reason": classification.reason,
+            "retrieval_latency_ms": round((t_retrieve - t_classify) * 1000, 1),
+            "generation_latency_ms": round((t_generate - t_retrieve) * 1000, 1),
+            "end_to_end_latency_ms": round((t_generate - t0) * 1000, 1),
+            "llm_backend": llm.__class__.__name__,
+            "llm_model": "streaming",
+            "cache_hit": False,
+        }
+
+        # Cache the result for future non-streaming requests
+        result = QueryResult(
+            answer=answer_text,
+            query_type=classification.query_type,
+            sources=sources,
+            evidence=evidence,
+            metrics=metrics,
+            visualization=viz,
+        )
+        self._cache.put(question, result)
+
+        yield {
+            "type": "done",
+            "answer": answer_text,
+            "metrics": metrics,
+            "visualization": viz,
+        }
 
     @staticmethod
     def _extract_sources(evidence: dict) -> List[dict]:

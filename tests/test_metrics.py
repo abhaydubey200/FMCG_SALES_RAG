@@ -1,63 +1,82 @@
+"""
+Tests for dynamic analytics engine functions.
+
+These tests verify the workspace-aware functions that replaced the
+legacy hardcoded query functions.
+"""
 import pytest
 
-from src.analytics import sql_layer
+from src.analytics.dynamic_engine import (
+    has_workspace_data,
+    get_workspace_tables,
+    workspace_total_revenue,
+    workspace_total_quantity,
+    workspace_total_spend,
+    workspace_revenue_by_dimension,
+    workspace_revenue_trend,
+    workspace_top_entities,
+    workspace_row_count,
+    discover_available_data,
+    get_available_kpis,
+)
 
 
-def test_top_products_by_revenue_returns_ranked_list():
-    results = sql_layer.top_products_by_revenue(limit=5)
-    assert len(results) == 5
-    revenues = [r["revenue"] for r in results]
-    assert revenues == sorted(revenues, reverse=True)
+def test_has_workspace_data_returns_bool():
+    result = has_workspace_data()
+    assert isinstance(result, bool)
 
 
-def test_category_performance_has_required_fields():
-    results = sql_layer.category_performance()
-    assert len(results) > 0
-    row = results[0]
-    for field in ("category", "revenue", "units_sold", "gross_profit", "gross_margin_pct", "avg_discount_pct"):
-        assert field in row
+def test_get_workspace_tables_returns_list():
+    result = get_workspace_tables()
+    assert isinstance(result, list)
 
 
-def test_campaign_performance_roas_calculation():
-    results = sql_layer.campaign_performance(limit=5, order_by="roas")
-    for r in results:
-        if r["spend"]:
-            expected_roas = round(r["attributed_revenue"] / r["spend"], 2)
-            assert abs(r["roas"] - expected_roas) < 0.01
+def test_workspace_total_revenue_returns_float_or_none():
+    result = workspace_total_revenue()
+    assert result is None or isinstance(result, float)
 
 
-def test_product_metrics_gross_margin_consistency():
-    product = sql_layer.top_products_by_revenue(limit=1)[0]
-    metrics = sql_layer.product_metrics(product["product_id"])
-    assert metrics["revenue"] > 0
-    computed_margin = round(100 * metrics["gross_profit"] / metrics["revenue"], 2)
-    assert abs(metrics["gross_margin_pct"] - computed_margin) < 0.01
+def test_workspace_total_quantity_returns_float_or_none():
+    result = workspace_total_quantity()
+    assert result is None or isinstance(result, float)
 
 
-def test_revenue_growth_calculation():
-    product = sql_layer.top_products_by_revenue(limit=1)[0]
-    result = sql_layer.revenue_growth(
-        product["product_id"],
-        period_a=("2024-08-01", "2024-12-31"),
-        period_b=("2025-01-01", "2025-06-30"),
-    )
-    assert "growth_pct" in result
-    assert result["revenue_a"] >= 0
-    assert result["revenue_b"] >= 0
+def test_workspace_total_spend_returns_float_or_none():
+    result = workspace_total_spend()
+    assert result is None or isinstance(result, float)
 
 
-def test_find_product_by_name():
-    product = sql_layer.find_product_by_name("Aurora Pro Wireless Earbuds")
-    assert product is not None
-    assert product["product_id"] == "P0001"
+def test_workspace_revenue_by_dimension_returns_list():
+    for dim in ["region", "product", "category", "territory", "market"]:
+        result = workspace_revenue_by_dimension(dim)
+        assert isinstance(result, list)
 
 
-def test_repeat_purchase_rate_bounds():
-    result = sql_layer.repeat_purchase_rate()
-    assert 0 <= result["repeat_purchase_rate_pct"] <= 100
+def test_workspace_revenue_trend_returns_list():
+    result = workspace_revenue_trend()
+    assert isinstance(result, list)
 
 
-def test_review_summary_negative_pct_bounds():
-    summary = sql_layer.review_summary("P0001")
-    if summary["review_count"] > 0:
-        assert 0 <= summary["negative_review_pct"] <= 100
+def test_workspace_top_entities_returns_list():
+    result = workspace_top_entities(limit=5)
+    assert isinstance(result, list)
+    assert len(result) <= 5
+
+
+def test_workspace_row_count_returns_int():
+    result = workspace_row_count()
+    assert isinstance(result, int)
+    assert result >= 0
+
+
+def test_discover_available_data_returns_dict():
+    result = discover_available_data()
+    assert isinstance(result, dict)
+    assert "assets" in result
+    assert "available_measures" in result
+    assert "available_dimensions" in result
+
+
+def test_get_available_kpis_returns_list():
+    result = get_available_kpis()
+    assert isinstance(result, list)

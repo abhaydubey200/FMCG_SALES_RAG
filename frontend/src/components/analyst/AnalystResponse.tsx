@@ -153,8 +153,7 @@ export function AnalystResponse({
                     "text-xs font-medium mt-0.5",
                     kpi.delta >= 0 ? "text-emerald-600" : "text-rose-600"
                   )}
-                >
-                  {kpi.delta >= 0 ? "▲" : "▼"} {Math.abs(kpi.delta).toFixed(1)}%
+                >                    {kpi.delta >= 0 ? "▲" : "▼"} {Math.abs(Number(kpi.delta)).toFixed(1)}%
                 </div>
               )}
             </div>
@@ -257,9 +256,9 @@ export function AnalystResponse({
                             if (col.format === "currency") {
                               display = formatCurrency(val as number);
                             } else if (col.format === "percent") {
-                              display = `${(val as number).toFixed(1)}%`;
+                              display = `${Number(val).toFixed(1)}%`;
                             } else if (col.format === "roas") {
-                              display = `${(val as number).toFixed(2)}x`;
+                              display = `${Number(val).toFixed(2)}x`;
                             } else if (typeof val === "number") {
                               display = val.toLocaleString("en-US");
                             } else {
@@ -338,7 +337,7 @@ export function AnalystResponse({
                     {chunk.source}
                   </span>
                   <span className="text-xs text-brand-500">
-                    score: {chunk.relevance_score.toFixed(3)}
+                    score: {Number(chunk.relevance_score).toFixed(3)}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-1 line-clamp-3">

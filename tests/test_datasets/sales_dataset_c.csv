@@ -1,0 +1,16 @@
+order_day,item_name,market,sales_amount,volume
+2025-01-05,Gadget Pro,EMEA,22400,280
+2025-01-12,Gadget Lite,APAC,9800,120
+2025-01-19,Gadget Pro,Americas,16500,200
+2025-02-02,Gadget Ultra,EMEA,28900,350
+2025-02-09,Gadget Lite,APAC,10200,125
+2025-02-16,Gadget Pro,Americas,18300,225
+2025-03-03,Gadget Ultra,EMEA,31200,380
+2025-03-10,Gadget Lite,APAC,11500,140
+2025-03-17,Gadget Pro,Americas,19800,240
+2025-03-24,Gadget Ultra,EMEA,27600,330
+2025-04-07,Gadget Pro,APAC,24100,295
+2025-04-14,Gadget Lite,Americas,12800,155
+2025-04-21,Gadget Ultra,EMEA,29400,355
+2025-05-05,Gadget Pro,APAC,21700,265
+2025-05-12,Gadget Lite,Americas,13500,165

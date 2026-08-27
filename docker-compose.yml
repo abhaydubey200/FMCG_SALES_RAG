@@ -62,6 +62,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-tfidf}
+    volumes:
+      - ./data:/app/data
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
@@ -83,6 +85,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ragsql}:${POSTGRES_PASSWORD:-ragsql_secret_dev}@postgres:5432/${POSTGRES_DB:-ragsql}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
     networks:
       - ragsql-net
 

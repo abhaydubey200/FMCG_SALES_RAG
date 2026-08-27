@@ -1,0 +1,21 @@
+sales_date,product,region,revenue,quantity,discount_pct
+2025-01-15,Widget Alpha,North,12500,150,5.0
+2025-01-15,Widget Beta,South,8750,95,3.2
+2025-01-20,Widget Alpha,East,11200,130,7.5
+2025-02-01,Widget Gamma,North,15600,200,2.0
+2025-02-05,Widget Beta,West,9300,110,4.0
+2025-02-10,Widget Alpha,South,13400,160,6.1
+2025-02-15,Widget Gamma,East,14200,185,3.5
+2025-03-01,Widget Alpha,North,11800,140,8.0
+2025-03-05,Widget Beta,South,7600,88,2.5
+2025-03-10,Widget Gamma,West,16900,220,1.8
+2025-03-15,Widget Alpha,East,12100,145,5.5
+2025-03-20,Widget Beta,North,8900,102,4.2
+2025-04-01,Widget Gamma,South,17500,230,1.5
+2025-04-05,Widget Alpha,West,13000,155,6.8
+2025-04-10,Widget Beta,East,9100,108,3.0
+2025-04-15,Widget Gamma,North,18200,240,2.2
+2025-04-20,Widget Alpha,South,12800,152,7.0
+2025-05-01,Widget Beta,West,8500,98,3.8
+2025-05-05,Widget Gamma,East,16300,210,2.8
+2025-05-10,Widget Alpha,North,13500,165,4.5

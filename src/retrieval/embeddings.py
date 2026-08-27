@@ -57,6 +57,9 @@ class TfidfEmbedder(BaseEmbedder):
         self._fitted = False
 
     def fit(self, corpus: List[str]) -> None:
+        if not corpus:
+            self._fitted = False
+            return
         self.vectorizer.fit(corpus)
         self._fitted = True
 

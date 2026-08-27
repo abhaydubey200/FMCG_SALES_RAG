@@ -9,10 +9,12 @@ different numbers, we detect and flag it explicitly in the evidence rather
 than silently forwarding both to the LLM and hoping it notices.
 """
 import re
+import logging
 from typing import List, Optional
 
-from src.analytics import sql_layer
 from src.rag.query_classifier import QueryClassification
+
+logger = logging.getLogger(__name__)
 from src.retrieval.hybrid_retriever import HybridRetriever, RetrievedChunk
 
 DISCOUNT_PATTERN = re.compile(r"(\d{1,2})\s?%")
@@ -80,51 +82,56 @@ def build_evidence(question: str, classification: QueryClassification,
         category = classification.resolved_category
         q_lower = question.lower()
 
-        # Route to specific data based on question content
-        if "total sales" in q_lower or "total revenue" in q_lower or "how much" in q_lower:
-            structured["total_sales_summary"] = sql_layer.total_sales_summary()
-        elif "region" in q_lower or "best region" in q_lower or "which region" in q_lower:
-            structured["revenue_by_region"] = sql_layer.revenue_by_region()
-        elif "trend" in q_lower or "monthly" in q_lower:
-            structured["monthly_trend"] = sql_layer.monthly_revenue_trend()
-        elif "roas" in q_lower or "campaign" in q_lower:
-            structured["top_campaigns_by_roas"] = sql_layer.campaign_performance(limit=5, order_by="roas")
-        elif "segment" in q_lower or "customer segment" in q_lower or "ltv" in q_lower or "lifetime" in q_lower:
-            structured["customer_segments"] = sql_layer.customer_segment_summary()
-        elif ("discount" in q_lower or "margin" in q_lower) and "policy" not in q_lower and "strategy" not in q_lower:
-            structured["discount_margin_analysis"] = sql_layer.discount_margin_analysis()
+        # CRITICAL: Check workspace data first. Never silently use legacy.
+        from src.analytics.dynamic_engine import (
+            has_workspace_data, generate_dynamic_overview, discover_available_data,
+            workspace_total_revenue, workspace_revenue_by_dimension, workspace_revenue_trend,
+            workspace_top_entities,
+        )
 
-        if product:
-            structured["product"] = product
-            structured["product_metrics_all_time"] = sql_layer.product_metrics(product["product_id"])
-            structured["quarterly_trend"] = sql_layer.quarterly_trend(product["product_id"])
-            structured["campaigns_for_product"] = sql_layer.campaigns_for_product(product["product_id"])
-            structured["review_summary_all_time"] = sql_layer.review_summary(product["product_id"])
-        if category:
-            structured["category_performance"] = sql_layer.category_performance(category=category)
-        if not product and not category and not any(k in structured for k in ["top_campaigns_by_roas", "total_sales_summary", "revenue_by_region", "monthly_trend", "customer_segments", "discount_margin_analysis"]):
-            structured["top_products_by_revenue"] = sql_layer.top_products_by_revenue(limit=5)
-            structured["category_performance"] = sql_layer.category_performance()
+        workspace_has = has_workspace_data()
 
-        if qtype == "diagnostic":
-            if product:
-                pid = product["product_id"]
-                structured["decline_window_metrics"] = sql_layer.product_metrics(
-                    pid, start_date="2025-04-01", end_date="2025-06-30")
-                structured["pre_decline_metrics"] = sql_layer.product_metrics(
-                    pid, start_date="2025-01-01", end_date="2025-03-31")
-                structured["decline_window_reviews"] = sql_layer.review_summary(
-                    pid, start_date="2025-04-01", end_date="2025-07-31")
-                structured["revenue_growth_q1_vs_q2_2025"] = sql_layer.revenue_growth(
-                    pid, period_a=("2025-01-01", "2025-03-31"), period_b=("2025-04-01", "2025-06-30"))
-            elif not category:
-                # Region-level diagnostic: provide region + campaign context
-                region = classification.signals.get("resolved_region") if classification.signals else None
-                structured["revenue_by_region"] = sql_layer.revenue_by_region()
-                structured["campaign_summary"] = sql_layer.campaign_summary()
-                if region:
-                    structured["resolved_region"] = region
-                    structured["category_performance"] = sql_layer.category_performance()
+        if workspace_has:
+            # Workspace has uploaded data — use ONLY that data
+            try:
+                dynamic = generate_dynamic_overview()
+                if dynamic.get("kpis"):
+                    structured["dynamic_kpis"] = dynamic["kpis"]
+                if dynamic.get("trend"):
+                    structured["monthly_trend"] = dynamic["trend"]
+                if dynamic.get("breakdowns"):
+                    for dim_name, dim_data in dynamic["breakdowns"].items():
+                        structured[f"dynamic_{dim_name}"] = dim_data
+                # Include data discovery context
+                data_info = discover_available_data()
+                if data_info.get("assets"):
+                    structured["available_assets"] = [
+                        {"name": a["name"], "rows": a["row_count"], "domain": a["domain"]}
+                        for a in data_info["assets"]
+                    ]
+                # Route queries to workspace data only
+                if "total sales" in q_lower or "total revenue" in q_lower or "how much" in q_lower:
+                    rev = workspace_total_revenue()
+                    if rev is not None:
+                        structured["total_sales_summary"] = {"total_revenue": rev, "total_orders": workspace_row_count()}
+                    else:
+                        structured["no_revenue_measure"] = True
+                elif "region" in q_lower or "territory" in q_lower or "market" in q_lower:
+                    for dim in ["region", "territory", "market"]:
+                        rows = workspace_revenue_by_dimension(dim)
+                        if rows:
+                            structured["revenue_by_region"] = rows
+                            break
+                elif "product" in q_lower or "item" in q_lower or "sku" in q_lower:
+                    top = workspace_top_entities(limit=10)
+                    if top:
+                        structured["top_products_by_revenue"] = top
+            except Exception as e:
+                logger.warning(f"Workspace data query failed: {e}")
+        else:
+            # No workspace data — include empty state info, do NOT query legacy
+            structured["workspace_empty"] = True
+            structured["workspace_empty_message"] = "No uploaded data in workspace. Upload sales or marketing data to enable analytics."
 
         evidence["structured_data"] = structured
 

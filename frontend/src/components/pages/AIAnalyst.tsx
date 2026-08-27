@@ -8,17 +8,19 @@ import {
   Sparkles,
   Loader2,
   Trash2,
-  BarChart3,
   Brain,
 } from "lucide-react";
 import {
   sendQuery,
+  aiQuery,
+  aiQueryStream,
   getDataStatus,
   listConversations,
   createConversation,
   getConversation,
   addMessage,
   deleteConversation,
+  type StreamEvent,
 } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 import { AnalystResponse } from "@/components/analyst/AnalystResponse";
@@ -74,20 +76,6 @@ interface Conversation {
   created_at: string;
   updated_at: string;
 }
-
-const EXAMPLE_PROMPTS = [
-  { text: "What are total sales?", icon: "📊", category: "Analytics" },
-  { text: "Show monthly sales trend.", icon: "📈", category: "Analytics" },
-  { text: "Show revenue by region.", icon: "🗺️", category: "Analytics" },
-  { text: "Which product generated the highest revenue?", icon: "🏆", category: "Analytics" },
-  { text: "Which campaign has the best ROAS?", icon: "📣", category: "Marketing" },
-  { text: "What does the marketing strategy recommend?", icon: "📄", category: "RAG" },
-  {
-    text: "Why did sales decline in the North region after the campaign?",
-    icon: "🔍",
-    category: "Investigation",
-  },
-];
 
 export function AIAnalyst() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -151,19 +139,122 @@ export function AIAnalyst() {
         await addMessage(currentConvId, { role: "user", content: q });
       }
 
-      const result = await sendQuery(q);
-      const assistantMessage: Message = {
-        role: "assistant",
-        content: result.answer,
-        result: result as Message["result"],
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      // Add a placeholder for the streaming response
+      let streamedContent = "";
+      let streamMetadata: { query_type?: string; sources?: Array<{ type: string; source: string }>; visualization?: Record<string, unknown>; agents_used?: string[]; skills_used?: string[]; plan_steps?: number; classification_reason?: string } = {};
 
-      if (currentConvId) {
-        await addMessage(currentConvId, {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "", result: undefined, _streaming: true } as Message,
+      ]);
+
+      try {
+        for await (const event of aiQueryStream(q)) {
+          if (event.type === "metadata") {
+            const meta = event as Extract<StreamEvent, { type: "metadata" }>;
+            streamMetadata = {
+              query_type: meta.query_type,
+              sources: meta.sources,
+              visualization: meta.visualization as Record<string, unknown>,
+              agents_used: (meta as any).agents_used || [],
+              skills_used: (meta as any).skills_used || [],
+              plan_steps: (meta as any).plan_steps || 0,
+              classification_reason: (meta as any).classification_reason || "",
+            };
+            // Update the streaming message with metadata
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && (last as any)._streaming) {
+                updated[updated.length - 1] = {
+                  ...last,
+                  result: {
+                    answer: "",
+                    query_type: meta.query_type,
+                    sources: meta.sources,
+                    metrics: {},
+                    evidence: {},
+                    visualization: meta.visualization as any,
+                  },
+                };
+              }
+              return updated;
+            });
+          } else if (event.type === "token") {
+            const token = event as Extract<StreamEvent, { type: "token" }>;
+            streamedContent += token.content;
+            const content = streamedContent;
+            // Update the streaming message with new content
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && (last as any)._streaming) {
+                updated[updated.length - 1] = {
+                  ...last,
+                  content,
+                  result: last.result ? { ...last.result, answer: content } : undefined,
+                };
+              }
+              return updated;
+            });
+          } else if (event.type === "done") {
+            const done = event as Extract<StreamEvent, { type: "done" }>;
+            // Finalize the streaming message
+            setMessages((prev) => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last && (last as any)._streaming) {
+                updated[updated.length - 1] = {
+                  role: "assistant",
+                  content: done.answer,
+                  result: {
+                    answer: done.answer,
+                    query_type: (done.metrics as any)?.query_type || streamMetadata?.query_type || "analytical",
+                    sources: streamMetadata?.sources || [],
+                    metrics: done.metrics,
+                    evidence: {},
+                    visualization: done.visualization as any,
+                  },
+                };
+              }
+              return updated;
+            });
+          } else if (event.type === "error") {
+            const errEvt = event as Extract<StreamEvent, { type: "error" }>;
+            throw new Error(errEvt.error);
+          }
+        }
+      } catch (streamError) {
+        // If streaming fails, fall back to non-streaming query
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIdx = updated.length - 1;
+          if (lastIdx >= 0 && (updated[lastIdx] as any)._streaming) {
+            updated.pop(); // remove streaming placeholder
+          }
+          return updated;
+        });
+        const result = await aiQuery(q);
+        const assistantMessage: Message = {
           role: "assistant",
           content: result.answer,
-          result,
+          result: result as Message["result"],
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+      }
+
+      if (currentConvId) {
+        // Get the final assistant message for persistence
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant" && last.result) {
+            addMessage(currentConvId, {
+              role: "assistant",
+              content: last.content,
+              result: last.result,
+            });
+          }
+          return prev;
         });
       }
 
@@ -323,7 +414,7 @@ export function AIAnalyst() {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto">
           {isEmpty ? (
-            /* Empty State */
+            /* Empty State — no hardcoded prompts, only contextual guidance */
             <div className="max-w-2xl mx-auto px-6 py-16">
               <div className="text-center mb-10">
                 <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center mx-auto mb-4">
@@ -332,35 +423,18 @@ export function AIAnalyst() {
                 <h2 className="text-xl font-bold text-slate-900 mb-2">
                   What would you like to analyze?
                 </h2>
-                <p className="text-sm text-slate-500 max-w-md mx-auto">
-                  Ask questions about your sales data, marketing campaigns,
-                  customer segments, or uploaded documents. Get KPIs,
-                  visualizations, and evidence-backed answers.
-                </p>
-              </div>
-
-              {/* Example Prompts */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {EXAMPLE_PROMPTS.map((prompt, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setInput(prompt.text);
-                      inputRef.current?.focus();
-                    }}
-                    className="flex items-start gap-3 text-left px-4 py-3 rounded-xl border border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/50 transition-all group"
-                  >
-                    <span className="text-lg mt-0.5">{prompt.icon}</span>
-                    <div className="min-w-0">
-                      <span className="text-sm font-medium text-slate-700 group-hover:text-brand-700 transition-colors block">
-                        {prompt.text}
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        {prompt.category}
-                      </span>
-                    </div>
-                  </button>
-                ))}
+                {hasData || hasKb ? (
+                  <p className="text-sm text-slate-500 max-w-md mx-auto">
+                    Ask questions about your uploaded data. The analyst will
+                    dynamically discover what metrics, dimensions, and
+                    documents are available and answer from real data.
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-500 max-w-md mx-auto">
+                    Upload structured data (CSV/Excel) or documents (PDF/DOCX/TXT)
+                    in the Data Center, then come back to ask business questions.
+                  </p>
+                )}
               </div>
             </div>
           ) : (
@@ -369,16 +443,37 @@ export function AIAnalyst() {
               {messages.map((msg, i) => (
                 <div key={i}>
                   {msg.role === "user" ? (
-                    /* User message */
                     <div className="flex justify-end">
                       <div className="max-w-[80%] bg-brand-600 text-white rounded-2xl rounded-tr-md px-4 py-2.5 text-sm">
                         {msg.content}
                       </div>
                     </div>
                   ) : (
-                    /* Assistant message */
                     <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-md px-5 py-4 shadow-sm">
-                      {msg.result ? (
+                      {(msg as any)._streaming ? (
+                        /* Streaming response — show tokens as they arrive */
+                        <div>
+                          {msg.result && (
+                            <div className="flex items-center gap-2 mb-3">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border bg-brand-50 text-brand-700 border-brand-200 animate-pulse">
+                                STREAMING
+                              </span>
+                              <Loader2 className="w-3 h-3 animate-spin text-brand-400" />
+                            </div>
+                          )}
+                          <div className="prose prose-sm max-w-none text-slate-700 leading-relaxed">
+                            {msg.content || (
+                              <div className="flex items-center gap-2 text-slate-400">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span className="text-sm">Thinking...</span>
+                              </div>
+                            )}
+                            {msg.content && (
+                              <span className="inline-block w-0.5 h-4 bg-brand-500 animate-pulse ml-0.5 align-middle" />
+                            )}
+                          </div>
+                        </div>
+                      ) : msg.result ? (
                         <AnalystResponse
                           answer={msg.content}
                           queryType={msg.result.query_type}
@@ -398,8 +493,7 @@ export function AIAnalyst() {
                 </div>
               ))}
 
-              {/* Loading */}
-              {loading && (
+              {loading && messages.length > 0 && !messages.some((m) => (m as any)._streaming) && (
                 <div>
                   <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-md px-5 py-4 shadow-sm">
                     <div className="flex items-center gap-3 text-slate-500">

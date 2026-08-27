@@ -50,3 +50,33 @@ class OllamaLLM(BaseLLM):
         latency_ms = (time.time() - start) * 1000
         return LLMResponse(text=data.get("response", "").strip(), model_name=self.model,
                             backend="ollama", latency_ms=latency_ms)
+
+    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 700):
+        """Stream response tokens from Ollama using SSE."""
+        import json as _json
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "system": system or "",
+            "stream": True,
+            "options": {"num_predict": max_tokens, "temperature": 0.1},
+        }
+        try:
+            resp = requests.post(f"{self.base_url}/api/generate", json=payload,
+                                  timeout=config.LLM_TIMEOUT_SECONDS, stream=True)
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = _json.loads(line.decode("utf-8", errors="replace"))
+                    token = chunk.get("response", "")
+                    if token:
+                        yield token
+                    if chunk.get("done"):
+                        break
+                except _json.JSONDecodeError:
+                    continue
+        except Exception:
+            response = self.generate(prompt, system, max_tokens)
+            yield response.text

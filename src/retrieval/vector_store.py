@@ -33,6 +33,9 @@ class VectorStore:
 
     def build(self, chunks: List[Chunk]):
         self.chunks = chunks
+        if not chunks:
+            self.vectors = np.empty((0, 0))
+            return
         texts = [c.text for c in chunks]
         self.embedder.fit(texts)
         self.vectors = self.embedder.embed(texts)

@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo  Amazon RAG - Sales & Marketing Intelligence
+echo  Sales & Marketing Intelligence Platform
 echo  Starting services via Docker Compose...
 echo ============================================
 echo.
@@ -28,46 +28,78 @@ if %ERRORLEVEL% neq 0 (
 
 :: Create .env if missing
 if not exist ".env" (
-    echo [1/4] Creating .env from template...
+    echo [1/5] Creating .env from template...
     copy .env.example .env >nul 2>&1
 ) else (
-    echo [1/4] .env already exists.
+    echo [1/5] .env already exists.
 )
 
-echo [2/4] Building and starting Docker containers...
-docker compose up -d --build
+echo [2/5] Starting PostgreSQL and Redis...
+docker compose up -d postgres redis
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Docker Compose failed to start. Check the output above.
+    echo ERROR: Failed to start database services.
     pause
     exit /b 1
 )
 
-echo [3/4] Waiting for services to be healthy...
+echo [3/5] Waiting for database health...
 set /a RETRY=0
-:WAIT_LOOP
+:WAIT_DB
 set /a RETRY+=1
 if %RETRY% gtr 30 (
-    echo WARNING: Services may not be fully healthy after 60 seconds.
+    echo WARNING: Database may not be fully healthy.
+    goto START_SERVICES
+)
+docker compose exec -T postgres pg_isready -U ragsql >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    timeout /t 2 /nobreak >nul
+    goto WAIT_DB
+)
+echo        Database is healthy.
+
+:START_SERVICES
+echo [4/5] Starting API, Worker, Frontend, and Nginx...
+docker compose up -d api worker frontend nginx
+if %ERRORLEVEL% neq 0 (
+    echo WARNING: Some services may have failed to start.
     echo Check: docker compose ps
+)
+
+echo [5/5] Waiting for API health...
+set /a RETRY=0
+:WAIT_API
+set /a RETRY+=1
+if %RETRY% gtr 20 (
+    echo WARNING: API may not be fully healthy after 40 seconds.
     goto SHOW_STATUS
 )
 curl -s http://localhost:8000/health >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     timeout /t 2 /nobreak >nul
-    goto WAIT_LOOP
+    goto WAIT_API
 )
 echo        API is healthy.
 
-:SHOW_STATUS
-echo [4/4] Service status:
-docker compose ps
+:: Run database migrations (safe to run multiple times)
+echo        Running database migrations...
+docker compose exec -T api python -m src.database.migrate >nul 2>&1
+docker compose exec -T api python -m src.database.migrate_dynamic >nul 2>&1
+docker compose exec -T api python -m src.database.migrate_persistence >nul 2>&1
+echo        Migrations complete.
 
+:SHOW_STATUS
 echo.
 echo ============================================
-echo  Services started!
-echo    API:      http://localhost:8000
-echo    Frontend: http://localhost:3000
-echo    Docs:     http://localhost:8000/docs
+echo  Service Status:
+echo ============================================
+docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+echo.
+echo ============================================
+echo  Application URLs:
+echo    Frontend:  http://localhost:3000
+echo    API:       http://localhost:8000
+echo    API Docs:  http://localhost:8000/docs
+echo    Nginx:     http://localhost:80
 echo ============================================
 echo.
 echo Press any key to exit this window (services keep running)...

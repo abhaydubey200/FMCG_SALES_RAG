@@ -1,5 +1,6 @@
 -- ═══════════════════════════════════════════════════════════════════
--- Sales & Marketing Intelligence Platform — PostgreSQL Schema
+-- QueryBridge — PostgreSQL Schema
+-- Dynamic Sales & Marketing Intelligence Platform
 -- ═══════════════════════════════════════════════════════════════════
 
 -- Extensions
@@ -7,111 +8,65 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ═══════════════════════════════════════════════════════════════════════
--- CORE TABLES
+-- WORKSPACE
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS products (
-    product_id TEXT PRIMARY KEY,
-    product_name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    subcategory TEXT,
-    price NUMERIC(10,2),
-    cost NUMERIC(10,2),
-    rating NUMERIC(3,1),
-    review_count INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS sales (
-    id SERIAL PRIMARY KEY,
-    order_id TEXT,
-    product_id TEXT REFERENCES products(product_id),
-    customer_id TEXT,
-    order_date DATE,
-    quantity INTEGER,
-    selling_price NUMERIC(10,2),
-    revenue NUMERIC(12,2),
-    cost NUMERIC(12,2),
-    discount NUMERIC(5,2)
-);
-
-CREATE TABLE IF NOT EXISTS customers (
-    customer_id TEXT PRIMARY KEY,
-    segment TEXT,
-    region TEXT,
-    acquisition_channel TEXT,
-    first_purchase_date DATE,
-    lifetime_value NUMERIC(10,2)
-);
-
-CREATE TABLE IF NOT EXISTS campaigns (
-    id SERIAL PRIMARY KEY,
-    campaign_id TEXT,
-    campaign_name TEXT,
-    product_id TEXT REFERENCES products(product_id),
-    channel TEXT,
-    start_date DATE,
-    end_date DATE,
-    impressions INTEGER,
-    clicks INTEGER,
-    spend NUMERIC(10,2),
-    conversions INTEGER,
-    attributed_revenue NUMERIC(12,2)
-);
-
-CREATE TABLE IF NOT EXISTS reviews (
-    id SERIAL PRIMARY KEY,
-    review_id TEXT,
-    product_id TEXT REFERENCES products(product_id),
-    customer_id TEXT,
-    rating INTEGER,
-    review_text TEXT,
-    review_date DATE
-);
-
--- ═══════════════════════════════════════════════════════════════════════
--- DOCUMENT / RAG TABLES
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE TABLE IF NOT EXISTS documents (
-    document_id TEXT PRIMARY KEY,
-    document_name TEXT NOT NULL,
-    document_type TEXT,
-    file_path TEXT,
-    chunk_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'ready',
+CREATE TABLE IF NOT EXISTS workspaces (
+    workspace_id TEXT PRIMARY KEY DEFAULT 'default',
+    name TEXT NOT NULL DEFAULT 'Default Workspace',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS document_chunks (
-    chunk_id TEXT PRIMARY KEY,
-    document_id TEXT REFERENCES documents(document_id),
-    document_name TEXT,
-    document_type TEXT,
-    section TEXT,
-    text TEXT NOT NULL,
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS embeddings (
-    id SERIAL PRIMARY KEY,
-    chunk_id TEXT REFERENCES document_chunks(chunk_id),
-    embedding vector(384),
-    created_at TIMESTAMP DEFAULT NOW()
-);
+INSERT INTO workspaces (workspace_id, name) VALUES ('default', 'Default Workspace')
+ON CONFLICT (workspace_id) DO NOTHING;
 
 -- ═══════════════════════════════════════════════════════════════════════
--- DATASET TABLES
+-- ASSET REGISTRY (dynamic data catalog)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS assets (
+    asset_id TEXT PRIMARY KEY,
+    workspace_id TEXT DEFAULT 'default',
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,           -- 'structured' | 'unstructured'
+    source_type TEXT NOT NULL,    -- 'csv' | 'xlsx' | 'pdf' | 'manual' | 'seed'
+    status TEXT DEFAULT 'processing',  -- 'processing' | 'ready' | 'error' | 'deleted'
+    description TEXT DEFAULT '',
+    tags JSONB DEFAULT '[]',
+    domain TEXT DEFAULT 'unknown',  -- 'sales' | 'marketing' | 'customer' | 'product' | 'mixed' | 'unknown'
+    schema JSONB DEFAULT '{}',
+    row_count INTEGER DEFAULT 0,
+    column_count INTEGER DEFAULT 0,
+    size_bytes BIGINT DEFAULT 0,
+    table_name TEXT,              -- physical PostgreSQL table name for structured data
+    semantic_status TEXT DEFAULT 'pending',  -- 'pending' | 'mapped' | 'confirmed'
+    processing_status TEXT DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assets_workspace ON assets(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
+CREATE INDEX IF NOT EXISTS idx_assets_status ON assets(status);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DATASET METADATA
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS datasets (
     dataset_id TEXT PRIMARY KEY,
+    asset_id TEXT REFERENCES assets(asset_id),
+    workspace_id TEXT DEFAULT 'default',
     filename TEXT NOT NULL,
     file_type TEXT,
     file_size_bytes BIGINT,
     row_count INTEGER,
     col_count INTEGER,
     quality_score NUMERIC(5,1),
+    version INTEGER DEFAULT 1,
+    is_current BOOLEAN DEFAULT TRUE,
     uploaded_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -141,61 +96,86 @@ CREATE TABLE IF NOT EXISTS data_quality_results (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
--- SEMANTIC LAYER
+-- SEMANTIC MAPPING LAYER
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS semantic_metrics (
+CREATE TABLE IF NOT EXISTS semantic_mappings (
     id SERIAL PRIMARY KEY,
-    metric_name TEXT NOT NULL UNIQUE,
-    definition TEXT,
-    formula TEXT,
-    data_source TEXT,
+    workspace_id TEXT DEFAULT 'default',
+    asset_id TEXT,
+    table_name TEXT NOT NULL,
+    source_column TEXT NOT NULL,
+    canonical_concept TEXT NOT NULL,
+    concept_type TEXT NOT NULL,
+    confidence NUMERIC(3,2) DEFAULT 0.5,
+    mapping_method TEXT DEFAULT 'auto',
+    approved BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(asset_id, source_column)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sm_workspace ON semantic_mappings(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_sm_concept ON semantic_mappings(canonical_concept);
+CREATE INDEX IF NOT EXISTS idx_sm_table ON semantic_mappings(table_name);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DOCUMENT / RAG TABLES
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS documents (
+    document_id TEXT PRIMARY KEY,
+    document_name TEXT NOT NULL,
+    document_type TEXT,
+    file_path TEXT,
+    chunk_count INTEGER DEFAULT 0,
+    workspace_id TEXT DEFAULT 'default',
+    status TEXT DEFAULT 'ready',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS semantic_dimensions (
+CREATE TABLE IF NOT EXISTS document_chunks (
+    chunk_id TEXT PRIMARY KEY,
+    document_id TEXT REFERENCES documents(document_id),
+    document_name TEXT,
+    document_type TEXT,
+    section TEXT,
+    text TEXT NOT NULL,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
     id SERIAL PRIMARY KEY,
-    dimension_name TEXT NOT NULL UNIQUE,
-    definition TEXT,
-    source_columns TEXT,
+    chunk_id TEXT REFERENCES document_chunks(chunk_id),
+    embedding vector(384),
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
--- AI / QUERY TABLES
+-- DATASET RELATIONSHIPS
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS queries (
+CREATE TABLE IF NOT EXISTS dataset_relationships (
     id SERIAL PRIMARY KEY,
-    question TEXT NOT NULL,
-    query_type TEXT,
-    classification_reason TEXT,
-    answer TEXT,
-    sources JSONB DEFAULT '[]',
-    evidence JSONB DEFAULT '{}',
-    metrics JSONB DEFAULT '{}',
-    latency_ms NUMERIC(10,2),
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS insights (
-    id SERIAL PRIMARY KEY,
-    insight_type TEXT,
-    title TEXT,
-    description TEXT,
-    impact TEXT,
-    confidence TEXT,
-    evidence JSONB DEFAULT '[]',
+    workspace_id TEXT DEFAULT 'default',
+    source_asset_id TEXT,
+    source_column TEXT,
+    target_asset_id TEXT,
+    target_column TEXT,
+    relationship_type TEXT DEFAULT 'possible',
+    confidence NUMERIC(3,2) DEFAULT 0.5,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
--- CONVERSATIONS (persistent — replaces in-memory store)
+-- CONVERSATIONS
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
-    title TEXT DEFAULT 'New Conversation',
+    title TEXT NOT NULL DEFAULT 'New Conversation',
+    workspace_id TEXT DEFAULT 'default',
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -209,10 +189,8 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_conv_messages_conv_id ON conversation_messages(conversation_id);
-
 -- ═══════════════════════════════════════════════════════════════════════
--- ACTIONS (persistent — replaces in-memory store)
+-- ACTIONS
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS actions (
@@ -229,91 +207,84 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
--- EVALUATION
+-- EXECUTION PERSISTENCE (agentic AI traces)
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE TABLE IF NOT EXISTS evaluation_cases (
-    id SERIAL PRIMARY KEY,
-    case_id TEXT NOT NULL,
-    bucket TEXT,
-    question TEXT,
-    expected_query_type TEXT,
-    expected_source TEXT,
-    expected_characteristics TEXT
+CREATE TABLE IF NOT EXISTS execution_plans (
+    plan_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    workspace_id TEXT DEFAULT 'default',
+    conversation_id TEXT,
+    goal TEXT DEFAULT '',
+    query_type TEXT DEFAULT 'analytical',
+    agents_used JSONB DEFAULT '[]',
+    skills_used JSONB DEFAULT '[]',
+    steps JSONB DEFAULT '[]',
+    status TEXT DEFAULT 'created',
+    created_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS evaluation_runs (
-    id SERIAL PRIMARY KEY,
-    total_cases INTEGER,
-    type_accuracy NUMERIC(5,4),
-    retrieval_recall NUMERIC(5,4),
-    avg_latency_ms NUMERIC(10,2),
-    by_bucket JSONB DEFAULT '{}',
-    results JSONB DEFAULT '[]',
+CREATE INDEX IF NOT EXISTS idx_ep_trace ON execution_plans(trace_id);
+CREATE INDEX IF NOT EXISTS idx_ep_workspace ON execution_plans(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_ep_conv ON execution_plans(conversation_id);
+
+CREATE TABLE IF NOT EXISTS execution_steps (
+    step_id TEXT PRIMARY KEY,
+    plan_id TEXT REFERENCES execution_plans(plan_id),
+    agent_id TEXT NOT NULL,
+    tool_id TEXT,
+    action TEXT DEFAULT '',
+    input_data JSONB,
+    output_data JSONB,
+    status TEXT DEFAULT 'pending',
+    duration_ms FLOAT DEFAULT 0,
+    error TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════════════
--- OBSERVABILITY
--- ═══════════════════════════════════════════════════════════════════════
+CREATE INDEX IF NOT EXISTS idx_es_plan ON execution_steps(plan_id);
 
-CREATE TABLE IF NOT EXISTS system_events (
+CREATE TABLE IF NOT EXISTS agent_executions (
     id SERIAL PRIMARY KEY,
-    event_type TEXT,
-    component TEXT,
-    message TEXT,
+    trace_id TEXT NOT NULL,
+    plan_id TEXT,
+    agent_id TEXT NOT NULL,
+    status TEXT DEFAULT 'running',
+    input_data JSONB,
+    output_data JSONB,
+    duration_ms FLOAT DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ae_trace ON agent_executions(trace_id);
+
+CREATE TABLE IF NOT EXISTS evidence_records (
+    evidence_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    evidence_type TEXT DEFAULT 'unknown',
+    source TEXT DEFAULT '',
+    metric TEXT,
+    query_text TEXT,
+    result_data JSONB,
+    confidence FLOAT DEFAULT 1.0,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════════════
--- INDEXES
--- ═══════════════════════════════════════════════════════════════════════
+CREATE INDEX IF NOT EXISTS idx_er_trace ON evidence_records(trace_id);
 
-CREATE INDEX IF NOT EXISTS idx_sales_product_id ON sales(product_id);
-CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date);
-CREATE INDEX IF NOT EXISTS idx_sales_customer_id ON sales(customer_id);
-CREATE INDEX IF NOT EXISTS idx_campaigns_product_id ON campaigns(product_id);
-CREATE INDEX IF NOT EXISTS idx_campaigns_channel ON campaigns(channel);
-CREATE INDEX IF NOT EXISTS idx_reviews_product_id ON reviews(product_id);
-CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
-CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_id ON embeddings(chunk_id);
+CREATE TABLE IF NOT EXISTS verification_results (
+    id SERIAL PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    plan_id TEXT,
+    verdict TEXT NOT NULL,
+    reason TEXT DEFAULT '',
+    issues JSONB DEFAULT '[]',
+    warnings JSONB DEFAULT '[]',
+    evidence_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
 
--- Vector similarity index (IVFFlat for pgvector)
-DO $$ BEGIN
-    CREATE INDEX idx_embeddings_vector ON embeddings
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 10);
-EXCEPTION WHEN others THEN NULL;
-END $$;
-
--- ═══════════════════════════════════════════════════════════════════════
--- INITIAL DATA: Semantic Layer
--- ═══════════════════════════════════════════════════════════════════════
-
-INSERT INTO semantic_metrics (metric_name, definition, formula, data_source) VALUES
-('Revenue', 'Total sales revenue', 'SUM(revenue)', 'sales'),
-('Units Sold', 'Total units sold', 'SUM(quantity)', 'sales'),
-('Gross Profit', 'Revenue minus cost of goods', 'SUM(revenue - cost)', 'sales'),
-('Gross Margin', 'Profit margin percentage', '100 * SUM(revenue - cost) / SUM(revenue)', 'sales'),
-('Average Order Value', 'Revenue per order', 'SUM(revenue) / COUNT(DISTINCT order_id)', 'sales'),
-('Discount %', 'Mean discount applied', 'AVG(discount)', 'sales'),
-('ROAS', 'Return on ad spend', 'SUM(attributed_revenue) / SUM(spend)', 'campaigns'),
-('CTR', 'Click-through rate', 'SUM(clicks) / SUM(impressions)', 'campaigns'),
-('Conversion Rate', 'Conversion rate', 'SUM(conversions) / SUM(clicks)', 'campaigns'),
-('CAC', 'Customer acquisition cost', 'SUM(spend) / COUNT(DISTINCT customer_id)', 'campaigns'),
-('LTV', 'Customer lifetime value', 'AVG(lifetime_value)', 'customers'),
-('Repeat Purchase Rate', 'Repeat purchase rate', 'customers with >1 order / total', 'sales')
-ON CONFLICT (metric_name) DO NOTHING;
-
-INSERT INTO semantic_dimensions (dimension_name, definition, source_columns) VALUES
-('Product', 'product_id, product_name, category, subcategory', 'products'),
-('Category', 'product category grouping', 'products'),
-('Subcategory', 'subcategory within a category', 'products'),
-('Customer', 'customer_id, segment, region', 'customers'),
-('Customer Segment', 'Premium, Regular, Budget, New Customer', 'customers'),
-('Region', 'geographic region', 'customers'),
-('Campaign', 'campaign_id, campaign_name, channel', 'campaigns'),
-('Channel', 'marketing channel', 'campaigns'),
-('Date', 'order_date, start_date, end_date', 'sales')
-ON CONFLICT (dimension_name) DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_vr_trace ON verification_results(trace_id);

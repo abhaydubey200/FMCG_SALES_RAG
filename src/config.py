@@ -29,14 +29,6 @@ USE_POSTGRESQL = bool(DATABASE_URL and DATABASE_URL.startswith("postgresql"))
 # --- Redis ---
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# --- Synthetic data volume ---
-N_PRODUCTS = int(os.getenv("N_PRODUCTS", 120))
-N_SALES = int(os.getenv("N_SALES", 6000))
-N_CAMPAIGNS = int(os.getenv("N_CAMPAIGNS", 24))
-N_REVIEWS = int(os.getenv("N_REVIEWS", 1200))
-N_CUSTOMERS = int(os.getenv("N_CUSTOMERS", 600))
-RANDOM_SEED = int(os.getenv("RANDOM_SEED", 42))
-
 # --- Chunking ---
 CHUNK_SIZE_WORDS = int(os.getenv("CHUNK_SIZE_WORDS", 180))
 CHUNK_OVERLAP_WORDS = int(os.getenv("CHUNK_OVERLAP_WORDS", 40))

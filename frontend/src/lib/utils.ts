@@ -5,29 +5,37 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatCurrency(value: number | null | undefined): string {
+export function formatCurrency(value: number | string | null | undefined): string {
   if (value == null) return "N/A";
-  if (Math.abs(value) >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
-  if (Math.abs(value) >= 1e3) return `$${(value / 1e3).toFixed(1)}K`;
-  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  if (isNaN(num)) return "N/A";
+  if (Math.abs(num) >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
+  if (Math.abs(num) >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
+  return `$${num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
-export function formatNumber(value: number | null | undefined): string {
+export function formatNumber(value: number | string | null | undefined): string {
   if (value == null) return "N/A";
-  return value.toLocaleString("en-US");
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  if (isNaN(num)) return "N/A";
+  return num.toLocaleString("en-US");
 }
 
 export function formatPercent(
-  value: number | null | undefined
+  value: number | string | null | undefined
 ): string {
   if (value == null) return "—";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}%`;
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  if (isNaN(num)) return "—";
+  const sign = num >= 0 ? "+" : "";
+  return `${sign}${num.toFixed(1)}%`;
 }
 
-export function formatRoas(value: number | null | undefined): string {
+export function formatRoas(value: number | string | null | undefined): string {
   if (value == null) return "N/A";
-  return `${value.toFixed(2)}x`;
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  if (isNaN(num)) return "N/A";
+  return `${num.toFixed(2)}x`;
 }
 
 export function getQueryTypeVariant(queryType: string): string {
