@@ -1,0 +1,31 @@
+transaction_id,order_date,item_name,item_category,territory,units_sold,sales_amount,buyer_name,promo_name,promo_pct
+TXN-2001,2025-01-10,Widget Alpha,Electronics,South,98,9521.14,BUYER-001,Deal-Winter,4.5
+TXN-2002,2025-01-20,Gadget Beta,Electronics,South,120,14549.09,BUYER-002,Deal-Winter,3.0
+TXN-2003,2025-02-05,Tool Gamma,Home & Garden,South,175,5901.53,BUYER-003,Channel-Online,1.0
+TXN-2004,2025-02-18,Widget Alpha,Electronics,South,145,14087.4,BUYER-004,Deal-Winter,5.5
+TXN-2005,2025-03-01,Gadget Beta,Electronics,South,88,10669.33,BUYER-005,Channel-Online,2.0
+TXN-2006,2025-03-15,Tool Gamma,Home & Garden,South,210,7081.84,BUYER-006,Channel-Online,0.5
+TXN-2007,2025-04-02,Widget Alpha,Electronics,South,110,10687.0,BUYER-007,Deal-Spring,4.0
+TXN-2008,2025-04-12,Gadget Beta,Electronics,South,155,18792.57,BUYER-008,Deal-Spring,6.0
+TXN-2009,2025-04-25,Tool Gamma,Home & Garden,South,195,6575.99,BUYER-009,Channel-Online,1.5
+TXN-2010,2025-05-08,Widget Alpha,Electronics,South,82,7966.67,BUYER-010,Channel-Retail,3.5
+TXN-2011,2025-05-18,Gadget Beta,Electronics,South,130,15761.51,BUYER-011,Deal-Spring,5.0
+TXN-2012,2025-06-01,Tool Gamma,Home & Garden,South,225,7587.69,BUYER-012,Channel-Online,0.0
+TXN-2013,2025-06-14,Widget Alpha,Electronics,South,128,12435.78,BUYER-013,Channel-Retail,2.5
+TXN-2014,2025-06-28,Gadget Beta,Electronics,South,95,11518.03,BUYER-014,Deal-Summer,4.5
+TXN-2015,2025-07-05,Tool Gamma,Home & Garden,South,165,5564.3,BUYER-015,Channel-Online,1.0
+TXN-2016,2025-07-18,Widget Alpha,Electronics,South,138,13407.32,BUYER-016,Deal-Summer,3.0
+TXN-2017,2025-08-01,Gadget Beta,Electronics,South,112,13579.15,BUYER-017,Deal-Summer,5.5
+TXN-2018,2025-08-15,Tool Gamma,Home & Garden,South,190,6407.38,BUYER-018,Channel-Online,0.5
+TXN-2019,2025-08-28,Widget Alpha,Electronics,South,102,9909.76,BUYER-019,Channel-Retail,4.0
+TXN-2020,2025-09-10,Gadget Beta,Electronics,South,148,17943.87,BUYER-020,Deal-Fall,6.5
+TXN-2021,2025-09-22,Tool Gamma,Home & Garden,South,180,6070.15,BUYER-021,Channel-Online,0.0
+TXN-2022,2025-10-05,Widget Alpha,Electronics,South,90,8743.91,BUYER-022,Deal-Fall,3.5
+TXN-2023,2025-10-18,Gadget Beta,Electronics,South,160,19398.78,BUYER-023,Deal-Fall,5.0
+TXN-2024,2025-11-01,Tool Gamma,Home & Garden,South,200,6744.61,BUYER-024,Channel-Online,1.5
+TXN-2025,2025-11-12,Widget Alpha,Electronics,South,118,11464.23,BUYER-025,Channel-Retail,2.0
+TXN-2026,2025-11-25,Gadget Beta,Electronics,South,105,12730.45,BUYER-026,Deal-Holiday,4.0
+TXN-2027,2025-12-08,Tool Gamma,Home & Garden,South,240,8093.53,BUYER-027,Channel-Online,0.0
+TXN-2028,2025-12-15,Widget Alpha,Electronics,South,132,12824.39,BUYER-028,Deal-Holiday,5.5
+TXN-2029,2025-12-22,Gadget Beta,Electronics,South,142,17216.42,BUYER-029,Deal-Holiday,7.0
+TXN-2030,2025-12-30,Tool Gamma,Home & Garden,South,155,5227.08,BUYER-030,Channel-Online,1.0

@@ -62,8 +62,35 @@ class AnalyticsAgent(BaseAgent):
             result = {}
 
             if step == "discover":
-                # Discover available data
+                # Discover available data AND compute actual metric values
                 result = tools.call("get_discoverable_data")
+                # Also compute KPIs so the response contains real numbers
+                try:
+                    from src.analytics.dynamic_engine import (
+                        discover_available_data, workspace_total_revenue,
+                        workspace_total_quantity, workspace_total_spend,
+                    )
+                    data = discover_available_data()
+                    kpis = []
+                    total_rev = workspace_total_revenue()
+                    if total_rev is not None:
+                        kpis.append({"id": "total_revenue", "label": "Total Revenue", "value": round(total_rev, 2), "format": "currency"})
+                    total_qty = workspace_total_quantity()
+                    if total_qty is not None:
+                        kpis.append({"id": "total_quantity", "label": "Total Units", "value": round(total_qty, 2), "format": "number"})
+                    total_spend = workspace_total_spend()
+                    if total_spend is not None:
+                        kpis.append({"id": "total_spend", "label": "Total Spend", "value": round(total_spend, 2), "format": "currency"})
+                    result["dynamic_kpis"] = kpis
+                    # Also compute breakdowns for revenue by available dimensions
+                    from src.analytics.dynamic_engine import workspace_revenue_by_dimension
+                    for dim in ["region", "category", "product"]:
+                        breakdown = workspace_revenue_by_dimension(dim)
+                        if breakdown:
+                            result.setdefault("breakdowns", {})[dim] = breakdown
+                            break
+                except Exception as e:
+                    logger.warning("Failed to compute KPIs during discover: %s", e)
             elif step == "calculate":
                 # Calculate a metric
                 metric = message.input_data.get("metric", "")

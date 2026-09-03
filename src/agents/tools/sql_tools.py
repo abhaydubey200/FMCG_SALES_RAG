@@ -113,6 +113,12 @@ def register_tools(registry):
         if not valid:
             return {"error": msg, "rows": [], "columns": [], "row_count": 0}
 
+        # Check cache first
+        from src.llm.query_cache import get_cached_sql, cache_sql_result
+        cached = get_cached_sql(sql)
+        if cached is not None:
+            return cached
+
         try:
             from src.analytics.dynamic_engine import _get_pg_connection, _sanitize_sql_identifier
             conn = _get_pg_connection()
@@ -129,12 +135,14 @@ def register_tools(registry):
                         result_rows.append(dict(zip(columns, row)))
                     else:
                         result_rows.append(dict(zip(columns, row)))
-                return {
+                result = {
                     "rows": result_rows,
                     "columns": columns,
                     "row_count": len(result_rows),
                     "sql": sql,
                 }
+                cache_sql_result(sql, result)
+                return result
             finally:
                 conn.close()
         except Exception as e:

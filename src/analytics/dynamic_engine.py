@@ -888,12 +888,15 @@ def delete_dataset(dataset_id: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 
 def discover_available_data(workspace_id: str = DEFAULT_WORKSPACE) -> dict:
-    """Discover all available tables, columns, and semantic mappings for a workspace."""
+    """Discover all available tables, columns, and semantic mappings for a workspace.
+    
+    Raises RuntimeError on database failure — never silently returns empty data.
+    An empty result means the workspace has no assets, not that the DB is down.
+    """
     try:
         conn = _get_pg_connection()
-    except Exception:
-        return {"assets": [], "legacy_tables": [], "mappings": [],
-                "available_measures": {}, "available_dimensions": {}}
+    except Exception as e:
+        raise RuntimeError(f"Database unavailable — cannot discover data: {e}")
     try:
         cur = conn.cursor()
 
@@ -1249,100 +1252,174 @@ def build_dynamic_semantic_context(workspace_id: str = DEFAULT_WORKSPACE) -> str
 # These replace legacy hardcoded queries when workspace data exists.
 # ═══════════════════════════════════════════════════════════════════════
 
+def _deduplicate_measure_entries(entries: List[dict]) -> List[dict]:
+    """Deduplicate measure entries that belong to the same source file.
+    Multi-sheet Excel uploads create multiple tables sharing a base prefix
+    (e.g. 'myfile_abc123__sheet1' and 'myfile_abc123__sheet2').
+    This picks the most granular (highest row count) table per base asset
+    so each uploaded file is counted exactly once.
+    """
+    if not entries:
+        return []
+
+    # Group by base asset: table name before first '__' if present
+    groups: Dict[str, List[dict]] = {}
+    for e in entries:
+        tbl = e.get("table", "")
+        base = tbl.split("__")[0] if "__" in tbl else tbl
+        groups.setdefault(base, []).append(e)
+
+    deduped: List[dict] = []
+    for base, group in groups.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+        else:
+            # Pick the table with the most rows (most granular)
+            best = group[0]
+            best_rows = 0
+            for e in group:
+                tbl = e.get("table", "")
+                try:
+                    _sanitize_sql_identifier(tbl)
+                    col = e.get("column", "")
+                    if col:
+                        _sanitize_sql_identifier(col)
+                    conn = _get_pg_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(f'SELECT COUNT(*) FROM "{tbl}"')
+                        rc = cur.fetchone()[0] or 0
+                        if rc > best_rows:
+                            best_rows = rc
+                            best = e
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            deduped.append(best)
+    return deduped
+
+
 def workspace_total_revenue(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[float]:
-    """Get total revenue from workspace data. Returns None if no revenue measure found."""
-    try:
-        data = discover_available_data(workspace_id)
-    except Exception:
-        return None
+    """Get total revenue from ALL workspace data (summing across all tables, deduplicated).
+    
+    Returns None only when workspace genuinely has no revenue data.
+    Raises RuntimeError on database failure — never converts DB errors to None.
+    """
+    data = discover_available_data(workspace_id)
     revenue_entries = data["available_measures"].get("revenue", [])
     if not revenue_entries:
         return None
-    entry = revenue_entries[0]
-    table = entry["table"]
-    col = entry["column"]
-    _sanitize_sql_identifier(table)
-    _sanitize_sql_identifier(col)
+    entries = _deduplicate_measure_entries(revenue_entries)
+    total = 0.0
+    conn = None
     try:
         conn = _get_pg_connection()
-    except Exception:
-        return None
-    try:
         cur = conn.cursor()
-        cur.execute(f'SELECT SUM("{col}") FROM "{table}"')
-        result = cur.fetchone()[0]
-        return float(result) if result else 0.0
-    except Exception:
-        return None
+        for entry in entries:
+            table = entry["table"]
+            col = entry["column"]
+            _sanitize_sql_identifier(table)
+            _sanitize_sql_identifier(col)
+            cur.execute(f'SELECT SUM("{col}") FROM "{table}"')
+            val = cur.fetchone()[0]
+            if val:
+                total += float(val)
+        return total
+    except Exception as e:
+        raise RuntimeError(f"Revenue calculation failed: {e}")
     finally:
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
 
 
 def workspace_total_quantity(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[float]:
-    """Get total quantity from workspace data."""
-    try:
-        data = discover_available_data(workspace_id)
-    except Exception:
-        return None
+    """Get total quantity from ALL workspace data (summing across all tables, deduplicated).
+    
+    Returns None only when workspace genuinely has no quantity data.
+    Raises RuntimeError on database failure.
+    """
+    data = discover_available_data(workspace_id)
     entries = data["available_measures"].get("quantity", [])
     if not entries:
         return None
-    entry = entries[0]
+    entries = _deduplicate_measure_entries(entries)
+    total = 0.0
+    conn = None
     try:
         conn = _get_pg_connection()
-    except Exception:
-        return None
-    try:
         cur = conn.cursor()
-        _sanitize_sql_identifier(entry["table"])
-        _sanitize_sql_identifier(entry["column"])
-        cur.execute(f'SELECT SUM("{entry["column"]}") FROM "{entry["table"]}"')
-        result = cur.fetchone()[0]
-        return float(result) if result else 0.0
-    except Exception:
-        return None
+        for entry in entries:
+            table = entry["table"]
+            col = entry["column"]
+            try:
+                _sanitize_sql_identifier(table)
+                _sanitize_sql_identifier(col)
+                cur.execute(f'SELECT SUM("{col}") FROM "{table}"')
+                val = cur.fetchone()[0]
+                if val:
+                    total += float(val)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                continue
+        return total if total else None
+    except Exception as e:
+        raise RuntimeError(f"Quantity calculation failed: {e}")
     finally:
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
 
 
 def workspace_total_spend(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[float]:
-    """Get total marketing spend from workspace data."""
-    try:
-        data = discover_available_data(workspace_id)
-    except Exception:
-        return None
+    """Get total marketing spend from ALL workspace data (summing across all tables, deduplicated).
+    
+    Returns None only when workspace genuinely has no spend data.
+    Raises RuntimeError on database failure.
+    """
+    data = discover_available_data(workspace_id)
     entries = data["available_measures"].get("spend", [])
     if not entries:
         return None
-    entry = entries[0]
+    entries = _deduplicate_measure_entries(entries)
+    total = 0.0
+    conn = None
     try:
         conn = _get_pg_connection()
-    except Exception:
-        return None
-    try:
         cur = conn.cursor()
-        _sanitize_sql_identifier(entry["table"])
-        _sanitize_sql_identifier(entry["column"])
-        cur.execute(f'SELECT SUM("{entry["column"]}") FROM "{entry["table"]}"')
-        result = cur.fetchone()[0]
-        return float(result) if result else 0.0
-    except Exception:
-        return None
+        for entry in entries:
+            table = entry["table"]
+            col = entry["column"]
+            try:
+                _sanitize_sql_identifier(table)
+                _sanitize_sql_identifier(col)
+                cur.execute(f'SELECT SUM("{col}") FROM "{table}"')
+                val = cur.fetchone()[0]
+                if val:
+                    total += float(val)
+            except Exception:
+                continue
+        return total if total else None
+    except Exception as e:
+        raise RuntimeError(f"Spend calculation failed: {e}")
     finally:
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
 
 
 def workspace_revenue_by_dimension(dimension: str, workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
-    """Get revenue grouped by a dimension (region, product, category, etc.)."""
+    """Get revenue grouped by a dimension across ALL matching tables."""
     try:
         data = discover_available_data(workspace_id)
     except Exception:
@@ -1351,26 +1428,53 @@ def workspace_revenue_by_dimension(dimension: str, workspace_id: str = DEFAULT_W
     dim_entries = data["available_dimensions"].get(dimension, [])
     if not rev_entries or not dim_entries:
         return []
-    rev = rev_entries[0]
-    dim = dim_entries[0]
-    if rev["table"] != dim["table"]:
+
+    # Build pairs: (rev_table, rev_col, dim_table, dim_col) where both exist in the same table
+    rev_by_table = {e["table"]: e for e in rev_entries}
+    dim_by_table = {e["table"]: e for e in dim_entries}
+    common_tables = set(rev_by_table.keys()) & set(dim_by_table.keys())
+    if not common_tables:
         return []
-    _sanitize_sql_identifier(rev["table"])
-    _sanitize_sql_identifier(rev["column"])
-    _sanitize_sql_identifier(dim["column"])
+
+    # Deduplicate revenue entries
+    rev_entries_deduped = _deduplicate_measure_entries(rev_entries)
+    rev_tables_deduped = {e["table"] for e in rev_entries_deduped}
+    # Only use tables that are both in common and deduped
+    target_tables = common_tables & rev_tables_deduped
+    if not target_tables:
+        target_tables = common_tables  # fallback
+
+    merged: Dict[str, float] = {}
     try:
         conn = _get_pg_connection()
     except Exception:
         return []
     try:
         cur = conn.cursor()
-        cur.execute(f"""
-            SELECT "{dim["column"]}" AS dimension, SUM("{rev["column"]}") AS revenue
-            FROM "{rev["table"]}" WHERE "{dim["column"]}" IS NOT NULL
-            GROUP BY dimension ORDER BY revenue DESC
-        """)
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        for tbl in target_tables:
+            rev = rev_by_table[tbl]
+            dim = dim_by_table[tbl]
+            rev_col = rev["column"]
+            dim_col = dim["column"]
+            _sanitize_sql_identifier(tbl)
+            _sanitize_sql_identifier(rev_col)
+            _sanitize_sql_identifier(dim_col)
+            try:
+                cur.execute(f"""
+                    SELECT "{dim_col}" AS dim_val, SUM("{rev_col}") AS revenue
+                    FROM "{tbl}" WHERE "{dim_col}" IS NOT NULL
+                    GROUP BY dim_val
+                """)
+                for row in cur.fetchall():
+                    key = str(row[0])
+                    merged[key] = merged.get(key, 0.0) + float(row[1] or 0)
+            except Exception:
+                continue
+        if not merged:
+            return []
+        result = [{"dimension": k, "revenue": round(v, 2)} for k, v in merged.items()]
+        result.sort(key=lambda x: x["revenue"], reverse=True)
+        return result
     except Exception:
         return []
     finally:
@@ -1422,7 +1526,7 @@ def workspace_revenue_trend(workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]
 
 
 def workspace_top_entities(limit: int = 10, workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
-    """Get top entities by revenue."""
+    """Get top entities by revenue across ALL matching tables."""
     try:
         data = discover_available_data(workspace_id)
     except Exception:
@@ -1431,33 +1535,56 @@ def workspace_top_entities(limit: int = 10, workspace_id: str = DEFAULT_WORKSPAC
     prod_entries = data["available_dimensions"].get("product", [])
     if not rev_entries:
         return []
-    rev = rev_entries[0]
-    for prod in prod_entries:
-        if prod["table"] == rev["table"]:
-            _sanitize_sql_identifier(rev["table"])
-            _sanitize_sql_identifier(rev["column"])
-            _sanitize_sql_identifier(prod["column"])
+
+    rev_by_table = {e["table"]: e for e in rev_entries}
+    prod_by_table = {e["table"]: e for e in prod_entries}
+    common_tables = set(rev_by_table.keys()) & set(prod_by_table.keys())
+    if not common_tables:
+        return []
+
+    rev_entries_deduped = _deduplicate_measure_entries(rev_entries)
+    rev_tables_deduped = {e["table"] for e in rev_entries_deduped}
+    target_tables = common_tables & rev_tables_deduped
+    if not target_tables:
+        target_tables = common_tables
+
+    merged: Dict[str, float] = {}
+    try:
+        conn = _get_pg_connection()
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        for tbl in target_tables:
+            rev = rev_by_table[tbl]
+            prod = prod_by_table[tbl]
+            rev_col = rev["column"]
+            prod_col = prod["column"]
+            _sanitize_sql_identifier(tbl)
+            _sanitize_sql_identifier(rev_col)
+            _sanitize_sql_identifier(prod_col)
             try:
-                conn = _get_pg_connection()
-            except Exception:
-                return []
-            try:
-                cur = conn.cursor()
                 cur.execute(f"""
-                    SELECT "{prod["column"]}" AS name, SUM("{rev["column"]}") AS revenue
-                    FROM "{rev["table"]}" WHERE "{prod["column"]}" IS NOT NULL
-                    GROUP BY name ORDER BY revenue DESC LIMIT %s
-                """, (limit,))
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, r)) for r in cur.fetchall()]
+                    SELECT "{prod_col}" AS name, SUM("{rev_col}") AS revenue
+                    FROM "{tbl}" WHERE "{prod_col}" IS NOT NULL
+                    GROUP BY name
+                """)
+                for row in cur.fetchall():
+                    key = str(row[0])
+                    merged[key] = merged.get(key, 0.0) + float(row[1] or 0)
             except Exception:
-                return []
-            finally:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-    return []
+                continue
+        if not merged:
+            return []
+        sorted_items = sorted(merged.items(), key=lambda x: x[1], reverse=True)
+        return [{"name": k, "revenue": round(v, 2)} for k, v in sorted_items[:limit]]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def workspace_row_count(workspace_id: str = DEFAULT_WORKSPACE) -> int:

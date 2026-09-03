@@ -1,0 +1,21 @@
+invoice_id,invoice_date,product_name,product_category,market,qty,net_sales,client_id,export_program,markdown_pct
+EXP-3001,2025-01-08,Widget Alpha,Electronics,West,88,10385.87,CLIENT-001,Export-Q1,3.0
+EXP-3002,2025-01-25,Gadget Beta,Electronics,West,115,16937.51,CLIENT-002,Export-Q1,4.5
+EXP-3003,2025-02-10,Tool Gamma,Home & Garden,West,190,7783.55,CLIENT-003,Export-Q1,1.0
+EXP-3004,2025-02-22,Widget Alpha,Electronics,West,130,15342.76,CLIENT-004,Export-Q1,5.0
+EXP-3005,2025-03-08,Gadget Beta,Electronics,West,75,11046.2,CLIENT-005,Export-Q1,2.5
+EXP-3006,2025-03-20,Tool Gamma,Home & Garden,West,205,8398.04,CLIENT-006,Export-Q2,0.5
+EXP-3007,2025-04-05,Widget Alpha,Electronics,West,102,12038.16,CLIENT-007,Export-Q2,3.5
+EXP-3008,2025-04-18,Gadget Beta,Electronics,West,138,20325.01,CLIENT-008,Export-Q2,6.0
+EXP-3009,2025-05-02,Tool Gamma,Home & Garden,West,170,6964.23,CLIENT-009,Export-Q2,1.5
+EXP-3010,2025-05-15,Widget Alpha,Electronics,West,118,13926.5,CLIENT-010,Export-Q2,4.0
+EXP-3011,2025-05-28,Gadget Beta,Electronics,West,95,13991.85,CLIENT-011,Export-Q3,3.0
+EXP-3012,2025-06-10,Tool Gamma,Home & Garden,West,215,8807.7,CLIENT-012,Export-Q3,0.0
+EXP-3013,2025-06-22,Widget Alpha,Electronics,West,142,16759.01,CLIENT-013,Export-Q3,5.5
+EXP-3014,2025-07-05,Gadget Beta,Electronics,West,108,15906.53,CLIENT-014,Export-Q3,4.0
+EXP-3015,2025-07-18,Tool Gamma,Home & Garden,West,185,7578.72,CLIENT-015,Export-Q3,1.0
+EXP-3016,2025-08-01,Widget Alpha,Electronics,West,95,11212.02,CLIENT-016,Export-Q4,2.5
+EXP-3017,2025-08-15,Gadget Beta,Electronics,West,158,23270.66,CLIENT-017,Export-Q4,5.0
+EXP-3018,2025-08-28,Tool Gamma,Home & Garden,West,200,8193.21,CLIENT-018,Export-Q4,0.5
+EXP-3019,2025-09-10,Widget Alpha,Electronics,West,125,14752.65,CLIENT-019,Export-Q4,3.5
+EXP-3020,2025-09-25,Gadget Beta,Electronics,West,82,12077.17,CLIENT-020,Export-Q4,4.5

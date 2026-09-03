@@ -1,0 +1,36 @@
+order_id,date,product,category,region,quantity,revenue,customer,campaign,discount_pct
+ORD-1001,2025-01-15,Widget Alpha,Electronics,North,120,11762.36,CUST-001,Promo-Spring,5.0
+ORD-1002,2025-01-22,Gadget Beta,Electronics,North,85,10397.37,CUST-002,Promo-Spring,3.5
+ORD-1003,2025-02-03,Widget Alpha,Electronics,North,95,9311.87,CUST-003,Promo-Spring,4.0
+ORD-1004,2025-02-14,Tool Gamma,Home & Garden,North,200,6804.67,CUST-004,Channel-Direct,0.0
+ORD-1005,2025-02-28,Gadget Beta,Electronics,North,150,18348.31,CUST-005,Promo-Spring,6.0
+ORD-1006,2025-03-05,Widget Alpha,Electronics,North,78,7645.53,CUST-006,Channel-Retail,2.5
+ORD-1007,2025-03-12,Tool Gamma,Home & Garden,North,160,5443.74,CUST-007,Channel-Direct,0.0
+ORD-1008,2025-03-20,Gadget Beta,Electronics,North,110,13455.42,CUST-008,Promo-Summer,5.5
+ORD-1009,2025-04-01,Widget Alpha,Electronics,North,135,13232.65,CUST-009,Promo-Summer,4.5
+ORD-1010,2025-04-10,Tool Gamma,Home & Garden,North,180,6124.2,CUST-010,Channel-Direct,1.0
+ORD-1011,2025-04-18,Gadget Beta,Electronics,North,92,11253.63,CUST-011,Promo-Summer,3.0
+ORD-1012,2025-05-02,Widget Alpha,Electronics,North,140,13722.75,CUST-012,Channel-Retail,5.0
+ORD-1013,2025-05-15,Tool Gamma,Home & Garden,North,220,7485.14,CUST-013,Channel-Direct,0.5
+ORD-1014,2025-05-28,Gadget Beta,Electronics,North,68,8317.9,CUST-014,Promo-Summer,4.0
+ORD-1015,2025-06-03,Widget Alpha,Electronics,North,105,10292.06,CUST-015,Channel-Retail,2.0
+ORD-1016,2025-06-12,Tool Gamma,Home & Garden,North,190,6464.44,CUST-016,Channel-Direct,0.0
+ORD-1017,2025-06-25,Gadget Beta,Electronics,North,125,15290.25,CUST-017,Promo-Summer,6.5
+ORD-1018,2025-07-01,Widget Alpha,Electronics,North,88,8625.73,CUST-018,Promo-Fall,3.5
+ORD-1019,2025-07-10,Tool Gamma,Home & Garden,North,175,5954.09,CUST-019,Channel-Direct,1.5
+ORD-1020,2025-07-22,Gadget Beta,Electronics,North,145,17736.7,CUST-020,Promo-Fall,5.0
+ORD-1021,2025-08-05,Widget Alpha,Electronics,North,110,10782.16,CUST-021,Channel-Retail,4.0
+ORD-1022,2025-08-15,Tool Gamma,Home & Garden,North,210,7144.9,CUST-022,Channel-Direct,0.0
+ORD-1023,2025-08-28,Gadget Beta,Electronics,North,98,11987.56,CUST-023,Promo-Fall,3.0
+ORD-1024,2025-09-02,Widget Alpha,Electronics,North,130,12742.55,CUST-024,Promo-Fall,5.5
+ORD-1025,2025-09-14,Tool Gamma,Home & Garden,North,155,5273.62,CUST-025,Channel-Direct,2.0
+ORD-1026,2025-09-25,Gadget Beta,Electronics,North,120,14678.64,CUST-026,Channel-Retail,4.5
+ORD-1027,2025-10-01,Widget Alpha,Electronics,North,95,9311.87,CUST-027,Promo-Holiday,6.0
+ORD-1028,2025-10-10,Tool Gamma,Home & Garden,North,230,7825.37,CUST-028,Channel-Direct,0.5
+ORD-1029,2025-10-22,Gadget Beta,Electronics,North,75,9174.15,CUST-029,Promo-Holiday,3.5
+ORD-1030,2025-11-05,Widget Alpha,Electronics,North,115,11272.26,CUST-030,Channel-Retail,2.5
+ORD-1031,2025-11-15,Tool Gamma,Home & Garden,North,185,6294.32,CUST-031,Channel-Direct,1.0
+ORD-1032,2025-11-28,Gadget Beta,Electronics,North,140,17125.09,CUST-032,Promo-Holiday,5.0
+ORD-1033,2025-12-03,Widget Alpha,Electronics,North,160,15683.14,CUST-033,Promo-Holiday,7.0
+ORD-1034,2025-12-12,Tool Gamma,Home & Garden,North,200,6804.67,CUST-034,Channel-Direct,0.0
+ORD-1035,2025-12-20,Gadget Beta,Electronics,North,108,13210.77,CUST-035,Promo-Holiday,4.5

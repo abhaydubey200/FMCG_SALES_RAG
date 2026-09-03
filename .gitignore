@@ -4,7 +4,6 @@ __pycache__/
 .pytest_cache/
 data/warehouse.db
 data/vector_store.pkl
-data/knowledge_base/
 src/evaluation/eval_results.json
 .venv/
 venv/

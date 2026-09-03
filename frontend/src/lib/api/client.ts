@@ -2,7 +2,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 async function request<T>(
   path: string,
-  options?: RequestInit
+  options?: RequestInit & { signal?: AbortSignal }
 ): Promise<T> {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
@@ -11,6 +11,7 @@ async function request<T>(
       "Content-Type": "application/json",
       ...options?.headers,
     },
+    signal: options?.signal,
   });
 
   if (!res.ok) {
@@ -46,56 +47,40 @@ async function uploadFile<T>(path: string, file: File): Promise<T> {
 // Health
 export const healthCheck = () => request<{ status: string; llm_backend: string; embedding_backend: string }>("/health");
 
-// Query
-export const sendQuery = (question: string) =>
+// Query (legacy)
+export const sendQuery = (question: string, signal?: AbortSignal) =>
   request<{
     answer: string;
     query_type: string;
     sources: Array<{ type: string; source: string }>;
     metrics: Record<string, unknown>;
     evidence: Record<string, unknown>;
-    visualization?: {
-      kpis?: Array<{ label: string; value: string; delta?: number | null }>;
-      charts?: Array<{
-        type: string;
-        title: string;
-        data: Record<string, unknown>[];
-        x_key: string;
-        y_keys: string[];
-        y_labels?: string[];
-        colors?: string[];
-      }>;
-      tables?: Array<{
-        title: string;
-        columns: Array<{
-          key: string;
-          header: string;
-          sortable?: boolean;
-          align?: string;
-          format?: string;
-        }>;
-        rows: Record<string, unknown>[];
-      }>;
-      follow_ups?: string[];
-    };
+    visualization?: Record<string, unknown>;
   }>("/query", {
     method: "POST",
     body: JSON.stringify({ question }),
+    signal,
   });
 
-// Query (streaming)
+// Query (streaming) — legacy
 export type StreamEvent =
-  | { type: "metadata"; query_type: string; classification_reason: string; sources: Array<{ type: string; source: string }>; visualization: Record<string, unknown> }
+  | { type: "metadata"; query_type: string; classification_reason: string; agents_used?: string[]; skills_used?: string[]; plan_steps?: number; trace_id?: string; sources: Array<{ type: string; source: string }>; visualization: Record<string, unknown> }
   | { type: "token"; content: string }
-  | { type: "done"; answer: string; metrics: Record<string, unknown>; visualization: Record<string, unknown> }
+  | { type: "agent_started"; agent_id: string; step_id: string }
+  | { type: "agent_completed"; agent_id: string; step_id: string; duration_ms?: number }
+  | { type: "verification_started" }
+  | { type: "verification_completed"; verdict: string }
+  | { type: "progress"; stage: string; message?: string }
+  | { type: "done"; answer: string; metrics: Record<string, unknown>; visualization: Record<string, unknown>; sources?: Array<{ type: string; source: string }>; evidence?: Record<string, unknown> }
   | { type: "error"; error: string };
 
-export async function* sendQueryStream(question: string): AsyncGenerator<StreamEvent> {
+export async function* sendQueryStream(question: string, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
   const url = `${API_BASE}/query/stream`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
+    signal,
   });
 
   if (!res.ok) {
@@ -109,37 +94,41 @@ export async function* sendQueryStream(question: string): AsyncGenerator<StreamE
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
+      buffer += decoder.decode(value, { stream: true });
 
-    // Parse SSE events from buffer
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || ""; // keep incomplete event in buffer
+      // Parse SSE events from buffer
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || ""; // keep incomplete event in buffer
 
-    for (const eventBlock of events) {
-      let eventType = "message";
-      let data = "";
+      for (const eventBlock of events) {
+        let eventType = "message";
+        let data = "";
 
-      for (const line of eventBlock.split("\n")) {
-        if (line.startsWith("event: ")) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith("data: ")) {
-          data = line.slice(6);
+        for (const line of eventBlock.split("\n")) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            data = line.slice(6);
+          }
+        }
+
+        if (!data) continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          yield { type: eventType, ...parsed } as StreamEvent;
+        } catch {
+          // skip malformed events
         }
       }
-
-      if (!data) continue;
-
-      try {
-        const parsed = JSON.parse(data);
-        yield { type: eventType, ...parsed } as StreamEvent;
-      } catch {
-        // skip malformed events
-      }
     }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
 }
 
@@ -147,24 +136,36 @@ export async function* sendQueryStream(question: string): AsyncGenerator<StreamE
 // Agentic AI — multi-specialist orchestrator endpoints
 // ---------------------------------------------------------------------------
 
-export const aiQuery = (question: string) =>
+/** Build the request payload for AI query endpoints */
+function buildQueryPayload(question: string, conversationId?: string): Record<string, unknown> {
+  const payload: Record<string, unknown> = { question };
+  if (conversationId) {
+    payload.conversation_id = conversationId;
+  }
+  return payload;
+}
+
+export const aiQuery = (question: string, conversationId?: string, signal?: AbortSignal) =>
   request<{
     answer: string;
+    query_type?: string;
     sources: Array<{ type: string; source: string }>;
     metrics: Record<string, unknown>;
     evidence: Record<string, unknown>;
     visualization?: Record<string, unknown>;
   }>("/api/ai/query", {
     method: "POST",
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(buildQueryPayload(question, conversationId)),
+    signal,
   });
 
-export async function* aiQueryStream(question: string): AsyncGenerator<StreamEvent> {
+export async function* aiQueryStream(question: string, conversationId?: string, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
   const url = `${API_BASE}/api/ai/query/stream`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(buildQueryPayload(question, conversationId)),
+    signal,
   });
 
   if (!res.ok) {
@@ -178,27 +179,31 @@ export async function* aiQueryStream(question: string): AsyncGenerator<StreamEve
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
 
-    for (const eventBlock of events) {
-      let eventType = "message";
-      let data = "";
-      for (const line of eventBlock.split("\n")) {
-        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-        else if (line.startsWith("data: ")) data = line.slice(6);
+      for (const eventBlock of events) {
+        let eventType = "message";
+        let data = "";
+        for (const line of eventBlock.split("\n")) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          else if (line.startsWith("data: ")) data = line.slice(6);
+        }
+        if (!data) continue;
+        try {
+          const parsed = JSON.parse(data);
+          yield { type: eventType, ...parsed } as StreamEvent;
+        } catch { /* skip */ }
       }
-      if (!data) continue;
-      try {
-        const parsed = JSON.parse(data);
-        yield { type: eventType, ...parsed } as StreamEvent;
-      } catch { /* skip */ }
     }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
 }
 

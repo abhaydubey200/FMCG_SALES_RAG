@@ -13,20 +13,29 @@ def register_tools(registry):
     def vector_search(query: str, top_k: int = 5) -> Dict[str, Any]:
         """Search documents using vector similarity."""
         try:
+            # Check cache first
+            from src.llm.query_cache import get_cached_rag, cache_rag_result
+            cached = get_cached_rag(f"vector:{query}:{top_k}")
+            if cached is not None:
+                return cached
+
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
             results = pipeline.vector_store.search(query, top_k=top_k)
             chunks = []
             for r in results:
+                chunk = r.chunk if hasattr(r, 'chunk') else r
                 chunks.append({
-                    "document_id": r.get("document_id", ""),
-                    "document_name": r.get("document_name", ""),
-                    "document_type": r.get("document_type", ""),
-                    "text": r.get("text", ""),
-                    "relevance_score": r.get("score", 0.0),
-                    "source_path": r.get("metadata", {}).get("source_path", ""),
+                    "document_id": getattr(chunk, "document_id", ""),
+                    "document_name": getattr(chunk, "document_name", ""),
+                    "document_type": getattr(chunk, "document_type", ""),
+                    "text": getattr(chunk, "text", ""),
+                    "relevance_score": getattr(r, "score", 0.0),
+                    "source_path": getattr(chunk, "metadata", {}).get("source_path", "") if hasattr(chunk, "metadata") else "",
                 })
-            return {"chunks": chunks, "count": len(chunks), "query": query}
+            result = {"chunks": chunks, "count": len(chunks), "query": query}
+            cache_rag_result(f"vector:{query}:{top_k}", result)
+            return result
         except Exception as e:
             logger.error("Vector search failed: %s", e)
             return {"chunks": [], "count": 0, "error": str(e)}
@@ -34,37 +43,53 @@ def register_tools(registry):
     def keyword_search(query: str, top_k: int = 5) -> Dict[str, Any]:
         """Search documents using keyword matching."""
         try:
+            from src.llm.query_cache import get_cached_rag, cache_rag_result
+            cached = get_cached_rag(f"keyword:{query}:{top_k}")
+            if cached is not None:
+                return cached
+
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
             results = pipeline.keyword_index.search(query, top_k=top_k)
             chunks = []
             for r in results:
+                chunk = r.chunk if hasattr(r, 'chunk') else r
                 chunks.append({
-                    "document_id": r.get("document_id", ""),
-                    "document_name": r.get("document_name", ""),
-                    "text": r.get("text", ""),
-                    "relevance_score": r.get("score", 0.0),
+                    "document_id": getattr(chunk, "document_id", ""),
+                    "document_name": getattr(chunk, "document_name", ""),
+                    "text": getattr(chunk, "text", ""),
+                    "relevance_score": getattr(r, "score", 0.0),
                 })
-            return {"chunks": chunks, "count": len(chunks), "query": query}
+            result = {"chunks": chunks, "count": len(chunks), "query": query}
+            cache_rag_result(f"keyword:{query}:{top_k}", result)
+            return result
         except Exception as e:
             return {"chunks": [], "count": 0, "error": str(e)}
 
     def hybrid_search(query: str, top_k: int = 5) -> Dict[str, Any]:
         """Combined vector + keyword search with reranking."""
         try:
+            from src.llm.query_cache import get_cached_rag, cache_rag_result
+            cached = get_cached_rag(f"hybrid:{query}:{top_k}")
+            if cached is not None:
+                return cached
+
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
             results = pipeline.retriever.retrieve(query, top_k=top_k)
             chunks = []
             for r in results:
+                chunk = r.chunk if hasattr(r, 'chunk') else r
                 chunks.append({
-                    "document_id": getattr(r, "document_id", ""),
-                    "document_name": getattr(r, "document_name", ""),
-                    "text": getattr(r, "text", ""),
-                    "relevance_score": getattr(r, "score", 0.0),
-                    "source_path": getattr(r, "metadata", {}).get("source_path", "") if hasattr(r, "metadata") else "",
+                    "document_id": getattr(chunk, "document_id", ""),
+                    "document_name": getattr(chunk, "document_name", ""),
+                    "text": getattr(chunk, "text", ""),
+                    "relevance_score": getattr(r, "rerank_score", getattr(r, "score", 0.0)),
+                    "source_path": getattr(chunk, "metadata", {}).get("source_path", "") if hasattr(chunk, "metadata") else "",
                 })
-            return {"chunks": chunks, "count": len(chunks), "query": query}
+            result = {"chunks": chunks, "count": len(chunks), "query": query}
+            cache_rag_result(f"hybrid:{query}:{top_k}", result, ttl=600)
+            return result
         except Exception as e:
             return {"chunks": [], "count": 0, "error": str(e)}
 

@@ -12,10 +12,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { getSystemHealth, getDataStatus, listActions, updateAction, deleteAction } from "@/lib/api/client";
-import { cn, getStatusBg } from "@/lib/utils";
+import { cn, getStatusBg, formatNumber } from "@/lib/utils";
 import { Badge } from "@/components/common/Badge";
 import { EmptyState } from "@/components/common/EmptyState";
-import { formatNumber } from "@/lib/utils";
+import { PageHeader } from "@/components/common/PageHeader";
+import { StatusIndicator } from "@/components/common/StatusIndicator";
+import { LoadingState } from "@/components/common/LoadingState"
 
 interface HealthCheck {
   status: string;
@@ -97,22 +99,15 @@ export function SettingsPage() {
   if (loading) {
     return (
       <div className="p-6">
-        <h1 className="text-lg font-bold text-slate-900 mb-4">Data Sources & Settings</h1>
-        <div className="space-y-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="card animate-pulse">
-              <div className="h-4 w-48 bg-slate-200 rounded mb-2" />
-              <div className="h-3 w-full bg-slate-100 rounded" />
-            </div>
-          ))}
-        </div>
+        <PageHeader title="Settings" subtitle="System health, data status, and actions" />
+        <LoadingState layout="list" lines={5} />
       </div>
     );
   }
 
   return (
     <div className="p-6 space-y-8">
-      <h1 className="text-lg font-bold text-slate-900">Data Sources & Settings</h1>
+      <PageHeader title="Settings" subtitle="System health, data status, and actions" />
 
       {/* System Health */}
       <div>
@@ -141,11 +136,13 @@ export function SettingsPage() {
                       {info.status}
                     </Badge>
                   </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    {Object.entries(info)
-                      .filter(([k]) => k !== "status")
-                      .map(([k, v]) => `${k}: ${v}`)
-                      .join(" · ")}
+                  <div className="text-xs text-slate-500 mt-0.5 space-x-3">
+                    {info.latency_ms != null && <span>Latency: {info.latency_ms.toFixed(0)}ms</span>}
+                    {info.backend && <span>Backend: {info.backend}</span>}
+                    {info.model && <span>Model: {info.model}</span>}
+                    {info.chunks != null && <span>Chunks: {info.chunks}</span>}
+                    {info.message && <span>{info.message}</span>}
+                    {info.error && <span className="text-rose-500">{info.error}</span>}
                   </div>
                 </div>
               </div>

@@ -11,7 +11,6 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
-  Legend,
 } from "recharts";
 import {
   getAnalyticsOverview,
@@ -21,8 +20,10 @@ import {
 } from "@/lib/api/client";
 import { formatCurrency, formatNumber, RECHARTS_COLORS } from "@/lib/utils";
 import { KPICard } from "@/components/common/KPICard";
-import { KPISkeleton, ChartSkeleton } from "@/components/common/Skeleton";
+import { PageHeader } from "@/components/common/PageHeader";
+import { LoadingState, KPISkeleton, ChartSkeleton } from "@/components/common/LoadingState";
 import { EmptyState } from "@/components/common/EmptyState";
+import { ErrorState } from "@/components/common/ErrorState";
 import Link from "next/link";
 
 export function OverviewPage() {
@@ -31,35 +32,39 @@ export function OverviewPage() {
   const [categories, setCategories] = useState<Array<Record<string, unknown>>>([]);
   const [hasData, setHasData] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const status = await getDataStatus();
+      setHasData(status.has_data);
+      if (status.has_data) {
+        const [ov, tr, cat] = await Promise.all([
+          getAnalyticsOverview(),
+          getRevenueTrend(),
+          getCategoryPerformance(),
+        ]);
+        setOverview(ov as unknown as Record<string, unknown>);
+        setTrend(tr as unknown as Array<Record<string, unknown>>);
+        setCategories(cat as unknown as Array<Record<string, unknown>>);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load overview");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const status = await getDataStatus();
-        setHasData(status.has_data);
-        if (status.has_data) {
-          const [ov, tr, cat] = await Promise.all([
-            getAnalyticsOverview(),
-            getRevenueTrend(),
-            getCategoryPerformance(),
-          ]);
-          setOverview(ov as unknown as Record<string, unknown>);
-          setTrend(tr as unknown as Array<Record<string, unknown>>);
-          setCategories(cat as unknown as Array<Record<string, unknown>>);
-        }
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    };
     load();
   }, []);
 
   if (loading) {
     return (
       <div className="p-6 space-y-6">
-        <h1 className="text-lg font-bold text-slate-900">Executive Overview</h1>
+        <PageHeader title="Executive Overview" subtitle="Key performance indicators and trends" />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {Array.from({ length: 6 }).map((_, i) => (
             <KPISkeleton key={i} />
@@ -73,19 +78,25 @@ export function OverviewPage() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="p-6">
+        <PageHeader title="Executive Overview" subtitle="Key performance indicators and trends" />
+        <ErrorState message={error} onRetry={load} />
+      </div>
+    );
+  }
+
   if (!hasData) {
     return (
       <div className="p-6">
-        <h1 className="text-lg font-bold text-slate-900 mb-4">Executive Overview</h1>
+        <PageHeader title="Executive Overview" subtitle="Key performance indicators and trends" />
         <EmptyState
           icon="📊"
           title="No Data Connected"
           description="Upload a CSV or Excel file in Data Center to see your business overview."
           action={
-            <Link
-              href="/data-center"
-              className="inline-flex items-center px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium hover:bg-brand-700 transition-colors"
-            >
+            <Link href="/data-center" className="btn-primary inline-flex mt-2">
               Go to Data Center
             </Link>
           }
@@ -108,7 +119,7 @@ export function OverviewPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <h1 className="text-lg font-bold text-slate-900">Executive Overview</h1>
+      <PageHeader title="Executive Overview" subtitle="Key performance indicators and trends" />
 
       {/* KPI Grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -124,7 +135,7 @@ export function OverviewPage() {
         />
         <KPICard
           label="Margin"
-          value={`${kpi?.gross_margin_pct ?? "N/A"}%`}
+          value={kpi?.gross_margin_pct != null ? `${Number(kpi.gross_margin_pct).toFixed(1)}%` : "N/A"}
           delta={kpi?.margin_growth_pct}
         />
         <KPICard
@@ -134,7 +145,7 @@ export function OverviewPage() {
         />
         <KPICard
           label="ROAS"
-          value={`${kpi?.avg_roas ?? "N/A"}x`}
+          value={kpi?.avg_roas != null ? `${Number(kpi.avg_roas).toFixed(1)}x` : "N/A"}
           delta={kpi?.roas_growth_pct}
         />
         <KPICard
@@ -148,7 +159,7 @@ export function OverviewPage() {
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         {/* Revenue Trend */}
         <div className="lg:col-span-3 card">
-          <h2 className="card-header mb-4">Revenue & Profit Trend</h2>
+          <h2 className="card-title mb-4">Revenue & Profit Trend</h2>
           {trendData.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <AreaChart data={trendData}>
@@ -166,15 +177,8 @@ export function OverviewPage() {
                   tickFormatter={(v) => `$${(v / 1000).toFixed(0)}K`}
                 />
                 <Tooltip
-                  formatter={(value: number, name: string) => [
-                    formatCurrency(value),
-                    name,
-                  ]}
-                  contentStyle={{
-                    fontSize: 12,
-                    borderRadius: 8,
-                    border: "1px solid #e2e8f0",
-                  }}
+                  formatter={(value: number, name: string) => [formatCurrency(value), name]}
+                  contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
                 />
                 <Area
                   type="monotone"
@@ -205,7 +209,7 @@ export function OverviewPage() {
 
         {/* Category Performance */}
         <div className="lg:col-span-2 card">
-          <h2 className="card-header mb-4">Category Performance</h2>
+          <h2 className="card-title mb-4">Category Performance</h2>
           {catData.length > 0 ? (
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={catData} layout="vertical">
@@ -227,11 +231,7 @@ export function OverviewPage() {
                 />
                 <Tooltip
                   formatter={(value: number) => [formatCurrency(value), "Revenue"]}
-                  contentStyle={{
-                    fontSize: 12,
-                    borderRadius: 8,
-                    border: "1px solid #e2e8f0",
-                  }}
+                  contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e2e8f0" }}
                 />
                 <Bar
                   dataKey="revenue"

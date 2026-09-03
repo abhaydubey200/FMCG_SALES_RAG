@@ -13,6 +13,7 @@ Engineering notes (README "Backend engineering"):
 import io
 import logging
 import shutil
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -98,12 +99,118 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS: In production, restrict to specific origins via CORS_ORIGINS env var.
+# For development/demo: allow all.
+import os as _os
+cors_origins_str = _os.getenv("CORS_ORIGINS", "*")
+cors_origins = [o.strip() for o in cors_origins_str.split(",")] if cors_origins_str != "*" else ["*"]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+    CORSMiddleware, allow_origins=cors_origins, allow_credentials=(cors_origins != ["*"]),
     allow_methods=["*"], allow_headers=["*"],
 )
 
 _pipeline = None
+
+
+def _auto_seed_demo():
+    """Auto-seed demo datasets and knowledge docs if workspace is empty.
+
+    Called at API startup. Idempotent: skips if workspace already has data.
+    Handles both fresh Docker volumes and existing environments.
+    """
+    try:
+        if not config.USE_POSTGRESQL:
+            return
+
+        # Check if workspace already has data
+        try:
+            has_data = has_workspace_data()
+        except Exception:
+            has_data = False
+
+        if has_data:
+            logger.info("[seed] Workspace has data — skipping auto-seed")
+            return
+
+        logger.info("[seed] Workspace empty — auto-seeding demo environment...")
+
+        # Seed datasets
+        import os as _os
+        test_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "tests", "test_datasets")
+        test_dir = _os.path.normpath(test_dir)
+
+        demo_datasets = [
+            ("sales_region_north.csv", "Dataset A (North)"),
+            ("sales_region_south.csv", "Dataset B (South)"),
+            ("sales_export_erp.csv", "Dataset C (ERP)"),
+        ]
+
+        for filename, label in demo_datasets:
+            filepath = _os.path.join(test_dir, filename)
+            if not _os.path.exists(filepath):
+                logger.warning("[seed] %s not found — generating...", filepath)
+                try:
+                    import subprocess
+                    gen_script = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "tests", "generate_test_datasets.py")
+                    subprocess.run([sys.executable, gen_script], timeout=30, capture_output=True)
+                except Exception as ge:
+                    logger.warning("[seed] generate_test_datasets.py failed: %s", ge)
+                if not _os.path.exists(filepath):
+                    logger.error("[seed] Cannot find %s — skipping", filename)
+                    continue
+
+            try:
+                with open(filepath, "rb") as f:
+                    file_bytes = f.read()
+                result = dynamic_ingest(file_bytes, filename, "default")
+                logger.info("[seed] %s: %d rows ingested", label, result.get("total_rows", 0))
+            except Exception as e:
+                logger.warning("[seed] Failed to ingest %s: %s", filename, e)
+
+        # Seed knowledge base documents
+        import shutil
+        kb_dir = Path(config.KB_DIR)
+        kb_dir.mkdir(parents=True, exist_ok=True)
+        project_root = Path(_os.path.dirname(_os.path.abspath(__file__))).parent.parent
+        source_kb = project_root / "data" / "knowledge_base"
+
+        kb_docs = [
+            "trade_promotion_policy.md",
+            "sustainability_and_compliance.md",
+            "pricing_and_margin_policy.md",
+            "quality_and_recall_policy.md",
+            "category_management_strategy.md",
+        ]
+
+        docs_added = 0
+        for doc_name in kb_docs:
+            dest = kb_dir / doc_name
+            if dest.exists():
+                continue
+            src_file = source_kb / doc_name
+            if src_file.exists():
+                shutil.copy2(str(src_file), str(dest))
+                docs_added += 1
+
+        if docs_added > 0 and _pipeline:
+            logger.info("[seed] Reindexing pipeline (%d new docs)...", docs_added)
+            try:
+                _pipeline.reindex()
+                logger.info("[seed] Pipeline reindexed")
+            except Exception as e:
+                logger.warning("[seed] Reindex failed: %s", e)
+
+        # Verify
+        try:
+            total = workspace_total_revenue()
+            logger.info("[seed] Combined revenue after seed: %.2f", total or 0)
+        except Exception:
+            pass
+
+        logger.info("[seed] Auto-seed complete")
+
+    except Exception as e:
+        logger.warning("[seed] Auto-seed failed (non-fatal): %s", e)
 
 
 @app.on_event("startup")
@@ -113,35 +220,126 @@ def startup():
     _pipeline = get_pipeline()
     logger.info("Pipeline ready. LLM backend=%s, embedding backend=%s", config.LLM_BACKEND, config.EMBEDDING_BACKEND)
 
+    # Auto-seed demo environment if workspace is empty
+    _auto_seed_demo()
+
+    # Ensure knowledge base is indexed — the pre-startup seed script may
+    # have written .md files before the pipeline was loaded, so the
+    # vector store could be stale. Reindex if KB docs exist but chunks
+    # are zero.
+    try:
+        kb_dir = Path(config.KB_DIR)
+        kb_files = list(kb_dir.glob("*.md")) if kb_dir.exists() else []
+        if kb_files and _pipeline and len(_pipeline.vector_store.chunks) == 0:
+            logger.info("[startup] KB has %d .md files but 0 chunks — reindexing...", len(kb_files))
+            _pipeline.reindex()
+            logger.info("[startup] Reindexed KB: %d chunks", len(_pipeline.vector_store.chunks))
+    except Exception as e:
+        logger.warning("[startup] KB reindex check failed: %s", e)
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "llm_backend": config.LLM_BACKEND, "embedding_backend": config.EMBEDDING_BACKEND}
+    return {
+        "status": "ok",
+        "llm_backend": config.LLM_BACKEND,
+        "embedding_backend": config.EMBEDDING_BACKEND,
+        "groq_available": bool(config.GROQ_API_KEY),
+        "query_cache_enabled": getattr(config, "ENABLE_QUERY_CACHE", True),
+        "template_synthesis_enabled": getattr(config, "ENABLE_TEMPLATE_SYNTHESIS", True),
+    }
+
+
+@app.post("/api/ai/route")
+def route_query(req: QueryRequest):
+    """Debug endpoint — shows the deterministic routing decision for a query."""
+    if not req.question.strip():
+        raise HTTPException(status_code=422, detail="question must not be empty")
+    try:
+        from src.agents.router import get_router
+        from src.agents.semantic import get_semantic_resolver
+        router = get_router()
+        semantic = get_semantic_resolver()
+
+        route = router.route(req.question)
+        resolved = semantic.resolve(req.question, route.route)
+
+        return {
+            "route": route.route,
+            "confidence": route.confidence,
+            "reasoning": route.reasoning,
+            "entities": route.entities,
+            "metrics": route.metrics,
+            "dimensions": route.dimensions,
+            "needs_llm": route.needs_llm,
+            "resolved_metrics": [m.name for m in resolved.metrics],
+            "resolved_dimensions": [d.name for d in resolved.dimensions],
+            "grain": resolved.grain,
+            "needs_rag": resolved.needs_rag,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ai/cache/stats")
+def cache_stats():
+    """Return cache statistics for monitoring."""
+    try:
+        from src.llm.query_cache import get_query_cache
+        cache = get_query_cache()
+        return cache.stats()
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
+    """Unified query endpoint — delegates to the agentic orchestrator.
+    
+    Previously used the legacy RAGPipeline which had incorrect multi-dataset
+    aggregation. Now routes through the same orchestrator as /api/ai/query
+    for a single authoritative analytics path.
+    """
     if not req.question.strip():
         raise HTTPException(status_code=422, detail="question must not be empty")
     try:
-        result = _pipeline.answer(req.question)
+        orch = _get_orchestrator()
+        conv_context = []
+        conv_id = req.conversation_id
+        if conv_id:
+            try:
+                with sql_layer.get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                    conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
+            except Exception:
+                pass
+        result = orch.process(req.question, conversation_context=conv_context,
+                              conversation_id=conv_id, workspace_id="default")
+        # Adapt orchestrator response to QueryResponse format
+        return QueryResponse(
+            answer=result.get("answer", ""),
+            query_type=result.get("query_type", "analytical"),
+            sources=result.get("sources", []),
+            metrics=result.get("metrics", {}),
+            evidence=result.get("evidence", {}),
+            visualization=result.get("visualization", {}),
+        )
     except Exception as e:
         logger.exception("Query failed")
         raise HTTPException(status_code=500, detail=f"Failed to process query: {e}")
-    return QueryResponse(
-        answer=result.answer, query_type=result.query_type,
-        sources=result.sources, metrics=result.metrics, evidence=result.evidence,
-        visualization=result.visualization,
-    )
 
 
 @app.post("/query/stream")
 def query_stream(req: QueryRequest):
-    """SSE streaming endpoint for AI Analyst. Yields Server-Sent Events.
+    """SSE streaming endpoint — delegates to the agentic orchestrator.
     
     Events:
-    - event: metadata  → query_type, sources, visualization (sent before LLM starts)
+    - event: metadata  → query_type, classification, agents
+    - event: agent_started → agent execution begins
     - event: token     → incremental answer text
+    - event: agent_completed → agent finished
+    - event: verification_completed → verification result
     - event: done      → final metrics + full answer
     - event: error     → error message
     """
@@ -149,11 +347,46 @@ def query_stream(req: QueryRequest):
         raise HTTPException(status_code=422, detail="question must not be empty")
 
     def event_generator():
+        full_answer = []
         try:
-            for event in _pipeline.answer_stream(req.question):
+            # Immediate acknowledgment so frontend knows connection is alive
+            yield f"event: start\ndata: {{}}\n\n"
+
+            orch = _get_orchestrator()
+            conv_context = []
+            conv_id = req.conversation_id
+            if conv_id:
+                try:
+                    with sql_layer.get_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                        conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
+                except Exception:
+                    pass
+            for event in orch.process_stream(req.question, conversation_context=conv_context,
+                                              conversation_id=conv_id, workspace_id="default"):
                 event_type = event.get("type", "token")
                 data = json.dumps({k: v for k, v in event.items() if k != "type"}, default=str)
                 yield f"event: {event_type}\ndata: {data}\n\n"
+                if event_type == "token" and "content" in event:
+                    full_answer.append(event["content"])
+                elif event_type == "done" and "answer" in event:
+                    full_answer.clear()
+                    full_answer.append(event["answer"])
+            # Persist conversation messages
+            if conv_id and full_answer:
+                try:
+                    now = datetime.now().isoformat()
+                    with sql_layer.get_conn() as conn:
+                        cur = conn.cursor()
+                        answer_text = "".join(full_answer)
+                        cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                                    (conv_id, 'assistant', answer_text))
+                        cur.execute("UPDATE conversations SET updated_at = %s, title = CASE WHEN title = 'New Conversation' THEN LEFT(%s, 100) ELSE title END WHERE id = %s",
+                                    (now, req.question, conv_id))
+                        conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to persist streaming response: {e}")
         except Exception as e:
             logger.exception("Streaming query failed")
             error_data = json.dumps({"error": str(e)})
@@ -180,8 +413,13 @@ _orchestrator = None
 def _get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
-        from src.agents.orchestrator import Orchestrator
-        _orchestrator = Orchestrator()
+        try:
+            from src.agents.orchestrator_v2 import Orchestrator
+            _orchestrator = Orchestrator()
+        except Exception as e:
+            logger.warning("V2 orchestrator import failed (%s), using V1", e)
+            from src.agents.orchestrator import Orchestrator
+            _orchestrator = Orchestrator()
     return _orchestrator
 
 
@@ -204,6 +442,22 @@ def ai_query(req: QueryRequest):
                 pass
         result = orch.process(req.question, conversation_context=conv_context,
                               conversation_id=conv_id, workspace_id="default")
+        # Persist user message and assistant response to conversation
+        if conv_id:
+            try:
+                now = datetime.now().isoformat()
+                with sql_layer.get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                                (conv_id, 'user', req.question))
+                    result_json = json.dumps(result, default=str) if isinstance(result, dict) else str(result)
+                    cur.execute("INSERT INTO conversation_messages (conversation_id, role, content, result) VALUES (%s, %s, %s, %s)",
+                                (conv_id, 'assistant', result.get('answer', '') if isinstance(result, dict) else str(result), result_json))
+                    cur.execute("UPDATE conversations SET updated_at = %s, title = CASE WHEN title = 'New Conversation' THEN LEFT(%s, 100) ELSE title END WHERE id = %s",
+                                (now, req.question, conv_id))
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to persist conversation messages: {e}")
         return result
     except Exception as e:
         logger.exception("Agentic query failed")
@@ -217,7 +471,11 @@ def ai_query_stream(req: QueryRequest):
         raise HTTPException(status_code=422, detail="question must not be empty")
 
     def event_generator():
+        full_answer = []
         try:
+            # Immediate acknowledgment so frontend knows connection is alive
+            yield f"event: start\ndata: {{}}\n\n"
+
             orch = _get_orchestrator()
             conv_context = []
             conv_id = req.conversation_id
@@ -229,11 +487,39 @@ def ai_query_stream(req: QueryRequest):
                         conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
                 except Exception:
                     pass
+                # Persist user message
+                try:
+                    with sql_layer.get_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                                    (conv_id, 'user', req.question))
+                        conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to persist user message: {e}")
             for event in orch.process_stream(req.question, conversation_context=conv_context,
                                               conversation_id=conv_id, workspace_id="default"):
                 event_type = event.get("type", "token")
                 data = json.dumps({k: v for k, v in event.items() if k != "type"}, default=str)
                 yield f"event: {event_type}\ndata: {data}\n\n"
+                if event_type == "token" and "content" in event:
+                    full_answer.append(event["content"])
+                elif event_type == "done" and "answer" in event:
+                    full_answer.clear()
+                    full_answer.append(event["answer"])
+            # Persist assistant response
+            if conv_id and full_answer:
+                try:
+                    now = datetime.now().isoformat()
+                    with sql_layer.get_conn() as conn:
+                        cur = conn.cursor()
+                        answer_text = "".join(full_answer)
+                        cur.execute("INSERT INTO conversation_messages (conversation_id, role, content) VALUES (%s, %s, %s)",
+                                    (conv_id, 'assistant', answer_text))
+                        cur.execute("UPDATE conversations SET updated_at = %s, title = CASE WHEN title = 'New Conversation' THEN LEFT(%s, 100) ELSE title END WHERE id = %s",
+                                    (now, req.question, conv_id))
+                        conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to persist assistant response: {e}")
         except Exception as e:
             logger.exception("Agentic streaming query failed")
             error_data = json.dumps({"error": str(e)})
@@ -1193,6 +1479,48 @@ def data_center():
         "structured_count": len([a for a in assets if a.get("type") == "structured"]),
         "unstructured_count": len([a for a in assets if a.get("type") == "unstructured"]),
     }
+
+
+@app.get("/api/data-center/{asset_id}")
+def get_data_center_asset(asset_id: str):
+    """Get a single data center asset by ID."""
+    if asset_id.startswith("datahub_"):
+        dataset_id = asset_id.replace("datahub_", "", 1)
+        try:
+            ds_list = dynamic_list_datasets()
+            for ds in ds_list:
+                if ds.get('dataset_id') == dataset_id or ds.get('filename') == dataset_id:
+                    return {
+                        "id": f"datahub_{ds.get('dataset_id', dataset_id)}",
+                        "name": ds.get('filename', 'Unknown'),
+                        "type": "structured",
+                        "category": ds.get('domain', 'uploaded_dataset'),
+                        "source": "DataHub",
+                        "status": ds.get('status', 'ready'),
+                        "row_count": ds.get('total_rows', 0),
+                        "metadata": ds,
+                    }
+        except Exception:
+            pass
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if asset_id.startswith("kb_"):
+        document_id = asset_id.replace("kb_", "", 1)
+        if _pipeline:
+            for c in _pipeline.vector_store.chunks:
+                if c.document_id == document_id:
+                    return {
+                        "id": f"kb_{c.document_id}",
+                        "name": c.document_name,
+                        "type": "unstructured",
+                        "category": "knowledge_base",
+                        "source": c.document_type,
+                        "status": "indexed",
+                        "metadata": {"document_id": c.document_id, "document_type": c.document_type},
+                    }
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    raise HTTPException(status_code=404, detail="Asset not found")
 
 
 @app.delete("/api/data-center/{asset_id}")

@@ -1,146 +1,97 @@
-"""
-Generate test datasets for verifying the dynamic data engine.
-Creates three materially different test datasets with different column names
-to verify schema-flexible semantic mapping.
-"""
-import io
-import sys
-from pathlib import Path
+#!/usr/bin/env python3
+"""Generate test datasets with exact ground-truth revenue totals."""
+import csv, os
+from decimal import Decimal, ROUND_HALF_UP
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+def d(val):
+    return float(Decimal(str(val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
-import pandas as pd
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_datasets")
+os.makedirs(OUT, exist_ok=True)
 
+# Raw revenue values (will be scaled to hit exact targets)
+v_a_raw = [14520,12835,11495,8400,22650,9438,6720,16610,16335,7560,13892,16940,9240,10268,12705,7980,18875,10648,7350,21895,13310,8820,14798,15730,6510,18120,11495,9660,11325,13915,7770,21140,19360,8400,16308]
+v_b_raw = [11858,18120,7350,17545,13288,8820,13310,23405,8190,9922,19630,9450,15488,14345,6930,16698,16912,7980,12342,22348,7560,10890,24160,8400,14278,15855,10080,15972,21442,6510]
+v_c_raw = [10648,17365,7980,15730,11325,8610,12342,20838,7140,14278,14345,9030,17182,16308,7770,11495,23858,8400,15125,12382]
 
-def create_dataset_a():
-    """Dataset A: Standard sales format with revenue, quantity, discount."""
-    data = {
-        "sales_date": [
-            "2025-01-15", "2025-01-15", "2025-01-20", "2025-02-01", "2025-02-05",
-            "2025-02-10", "2025-02-15", "2025-03-01", "2025-03-05", "2025-03-10",
-            "2025-03-15", "2025-03-20", "2025-04-01", "2025-04-05", "2025-04-10",
-            "2025-04-15", "2025-04-20", "2025-05-01", "2025-05-05", "2025-05-10",
-        ],
-        "product": [
-            "Widget Alpha", "Widget Beta", "Widget Alpha", "Widget Gamma", "Widget Beta",
-            "Widget Alpha", "Widget Gamma", "Widget Alpha", "Widget Beta", "Widget Gamma",
-            "Widget Alpha", "Widget Beta", "Widget Gamma", "Widget Alpha", "Widget Beta",
-            "Widget Gamma", "Widget Alpha", "Widget Beta", "Widget Gamma", "Widget Alpha",
-        ],
-        "region": [
-            "North", "South", "East", "North", "West",
-            "South", "East", "North", "South", "West",
-            "East", "North", "South", "West", "East",
-            "North", "South", "West", "East", "North",
-        ],
-        "revenue": [
-            12500, 8750, 11200, 15600, 9300,
-            13400, 14200, 11800, 7600, 16900,
-            12100, 8900, 17500, 13000, 9100,
-            18200, 12800, 8500, 16300, 13500,
-        ],
-        "quantity": [
-            150, 95, 130, 200, 110,
-            160, 185, 140, 88, 220,
-            145, 102, 230, 155, 108,
-            240, 152, 98, 210, 165,
-        ],
-        "discount_pct": [
-            5.0, 3.2, 7.5, 2.0, 4.0,
-            6.1, 3.5, 8.0, 2.5, 1.8,
-            5.5, 4.2, 1.5, 6.8, 3.0,
-            2.2, 7.0, 3.8, 2.8, 4.5,
-        ],
-    }
-    return pd.DataFrame(data)
+targets = {"A": 366979.88, "B": 328460.90, "C": 255697.35}
 
+def scale_and_adjust(raw_vals, target):
+    scale = target / sum(raw_vals)
+    vals = [d(x * scale) for x in raw_vals]
+    vals[-1] = d(vals[-1] + d(target - d(sum(vals))))
+    return vals
 
-def create_dataset_b():
-    """Dataset B: Different naming convention — net_sales, units_sold, territory."""
-    data = {
-        "transaction_date": [
-            "2025-01-10", "2025-01-15", "2025-01-20", "2025-02-01", "2025-02-05",
-            "2025-02-10", "2025-02-15", "2025-03-01", "2025-03-05", "2025-03-10",
-            "2025-03-15", "2025-03-20", "2025-04-01", "2025-04-05", "2025-04-10",
-        ],
-        "sku": [
-            "SKU-001", "SKU-002", "SKU-003", "SKU-001", "SKU-002",
-            "SKU-003", "SKU-001", "SKU-002", "SKU-003", "SKU-001",
-            "SKU-002", "SKU-003", "SKU-001", "SKU-002", "SKU-003",
-        ],
-        "territory": [
-            "Northeast", "Southeast", "Midwest", "Northeast", "Southeast",
-            "West", "South", "Northeast", "Southeast", "West",
-            "Midwest", "South", "Northeast", "Southeast", "West",
-        ],
-        "net_sales": [
-            18900, 12300, 15600, 19500, 11800,
-            14200, 17600, 13100, 16400, 18200,
-            12700, 15900, 20100, 13500, 17100,
-        ],
-        "units_sold": [
-            225, 140, 185, 235, 132,
-            170, 210, 150, 198, 220,
-            145, 190, 245, 158, 205,
-        ],
-    }
-    return pd.DataFrame(data)
+v_a = scale_and_adjust(v_a_raw, targets["A"])
+v_b = scale_and_adjust(v_b_raw, targets["B"])
+v_c = scale_and_adjust(v_c_raw, targets["C"])
 
+# Dataset A: sales_region_north.csv
+dates_a = ["2025-01-15","2025-01-22","2025-02-03","2025-02-14","2025-02-28","2025-03-05","2025-03-12","2025-03-20","2025-04-01","2025-04-10","2025-04-18","2025-05-02","2025-05-15","2025-05-28","2025-06-03","2025-06-12","2025-06-25","2025-07-01","2025-07-10","2025-07-22","2025-08-05","2025-08-15","2025-08-28","2025-09-02","2025-09-14","2025-09-25","2025-10-01","2025-10-10","2025-10-22","2025-11-05","2025-11-15","2025-11-28","2025-12-03","2025-12-12","2025-12-20"]
+prods = ["Widget Alpha","Gadget Beta"]
+cats = {"Widget Alpha": "Electronics", "Gadget Beta": "Electronics", "Tool Gamma": "Home & Garden"}
+prod_cycle_a = ["Widget Alpha","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta","Widget Alpha","Tool Gamma","Gadget Beta"]
+qty_a = [120,85,95,200,150,78,160,110,135,180,92,140,220,68,105,190,125,88,175,145,110,210,98,130,155,120,95,230,75,115,185,140,160,200,108]
+camps_a = ["Promo-Spring","Promo-Spring","Promo-Spring","Channel-Direct","Promo-Spring","Channel-Retail","Channel-Direct","Promo-Summer","Promo-Summer","Channel-Direct","Promo-Summer","Channel-Retail","Channel-Direct","Promo-Summer","Channel-Retail","Channel-Direct","Promo-Summer","Promo-Fall","Channel-Direct","Promo-Fall","Channel-Retail","Channel-Direct","Promo-Fall","Promo-Fall","Channel-Direct","Channel-Retail","Promo-Holiday","Channel-Direct","Promo-Holiday","Channel-Retail","Channel-Direct","Promo-Holiday","Promo-Holiday","Channel-Direct","Promo-Holiday"]
+disc_a = [5.0,3.5,4.0,0.0,6.0,2.5,0.0,5.5,4.5,1.0,3.0,5.0,0.5,4.0,2.0,0.0,6.5,3.5,1.5,5.0,4.0,0.0,3.0,5.5,2.0,4.5,6.0,0.5,3.5,2.5,1.0,5.0,7.0,0.0,4.5]
 
-def create_dataset_c():
-    """Dataset C: Another variation — order_day, item_name, sales_amount, volume."""
-    data = {
-        "order_day": [
-            "2025-01-05", "2025-01-12", "2025-01-19", "2025-02-02", "2025-02-09",
-            "2025-02-16", "2025-03-03", "2025-03-10", "2025-03-17", "2025-03-24",
-            "2025-04-07", "2025-04-14", "2025-04-21", "2025-05-05", "2025-05-12",
-        ],
-        "item_name": [
-            "Gadget Pro", "Gadget Lite", "Gadget Pro", "Gadget Ultra", "Gadget Lite",
-            "Gadget Pro", "Gadget Ultra", "Gadget Lite", "Gadget Pro", "Gadget Ultra",
-            "Gadget Pro", "Gadget Lite", "Gadget Ultra", "Gadget Pro", "Gadget Lite",
-        ],
-        "market": [
-            "EMEA", "APAC", "Americas", "EMEA", "APAC",
-            "Americas", "EMEA", "APAC", "Americas", "EMEA",
-            "APAC", "Americas", "EMEA", "APAC", "Americas",
-        ],
-        "sales_amount": [
-            22400, 9800, 16500, 28900, 10200,
-            18300, 31200, 11500, 19800, 27600,
-            24100, 12800, 29400, 21700, 13500,
-        ],
-        "volume": [
-            280, 120, 200, 350, 125,
-            225, 380, 140, 240, 330,
-            295, 155, 355, 265, 165,
-        ],
-    }
-    return pd.DataFrame(data)
+with open(os.path.join(OUT, "sales_region_north.csv"), "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["order_id","date","product","category","region","quantity","revenue","customer","campaign","discount_pct"])
+    for i in range(35):
+        p = prod_cycle_a[i]
+        w.writerow([f"ORD-{1001+i}", dates_a[i], p, cats[p], "North", qty_a[i], v_a[i], f"CUST-{i+1:03d}", camps_a[i], disc_a[i]])
 
+# Dataset B: sales_region_south.csv
+dates_b = ["2025-01-10","2025-01-20","2025-02-05","2025-02-18","2025-03-01","2025-03-15","2025-04-02","2025-04-12","2025-04-25","2025-05-08","2025-05-18","2025-06-01","2025-06-14","2025-06-28","2025-07-05","2025-07-18","2025-08-01","2025-08-15","2025-08-28","2025-09-10","2025-09-22","2025-10-05","2025-10-18","2025-11-01","2025-11-12","2025-11-25","2025-12-08","2025-12-15","2025-12-22","2025-12-30"]
+prod_cycle_b = ["Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma"]
+qty_b = [98,120,175,145,88,210,110,155,195,82,130,225,128,95,165,138,112,190,102,148,180,90,160,200,118,105,240,132,142,155]
+camps_b = ["Deal-Winter","Deal-Winter","Channel-Online","Deal-Winter","Channel-Online","Channel-Online","Deal-Spring","Deal-Spring","Channel-Online","Channel-Retail","Deal-Spring","Channel-Online","Channel-Retail","Deal-Summer","Channel-Online","Deal-Summer","Deal-Summer","Channel-Online","Channel-Retail","Deal-Fall","Channel-Online","Deal-Fall","Deal-Fall","Channel-Online","Channel-Retail","Deal-Holiday","Channel-Online","Deal-Holiday","Deal-Holiday","Channel-Online"]
+disc_b = [4.5,3.0,1.0,5.5,2.0,0.5,4.0,6.0,1.5,3.5,5.0,0.0,2.5,4.5,1.0,3.0,5.5,0.5,4.0,6.5,0.0,3.5,5.0,1.5,2.0,4.0,0.0,5.5,7.0,1.0]
 
-def save_test_datasets(output_dir: str = "tests/test_datasets"):
-    """Save all test datasets."""
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+with open(os.path.join(OUT, "sales_region_south.csv"), "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["transaction_id","order_date","item_name","item_category","territory","units_sold","sales_amount","buyer_name","promo_name","promo_pct"])
+    for i in range(30):
+        p = prod_cycle_b[i]
+        w.writerow([f"TXN-{2001+i}", dates_b[i], p, cats[p], "South", qty_b[i], v_b[i], f"BUYER-{i+1:03d}", camps_b[i], disc_b[i]])
 
-    datasets = {
-        "sales_dataset_a.csv": create_dataset_a(),
-        "sales_dataset_b.csv": create_dataset_b(),
-        "sales_dataset_c.csv": create_dataset_c(),
-    }
+# Dataset C: sales_export_erp.csv
+dates_c = ["2025-01-08","2025-01-25","2025-02-10","2025-02-22","2025-03-08","2025-03-20","2025-04-05","2025-04-18","2025-05-02","2025-05-15","2025-05-28","2025-06-10","2025-06-22","2025-07-05","2025-07-18","2025-08-01","2025-08-15","2025-08-28","2025-09-10","2025-09-25"]
+prod_cycle_c = ["Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta","Tool Gamma","Widget Alpha","Gadget Beta"]
+qty_c = [88,115,190,130,75,205,102,138,170,118,95,215,142,108,185,95,158,200,125,82]
+camps_c = ["Export-Q1"]*5 + ["Export-Q2"]*5 + ["Export-Q3"]*5 + ["Export-Q4"]*5
+disc_c = [3.0,4.5,1.0,5.0,2.5,0.5,3.5,6.0,1.5,4.0,3.0,0.0,5.5,4.0,1.0,2.5,5.0,0.5,3.5,4.5]
 
-    for filename, df in datasets.items():
-        filepath = output_path / filename
-        df.to_csv(filepath, index=False)
-        print(f"Created {filename}: {len(df)} rows, {len(df.columns)} columns")
-        print(f"  Columns: {list(df.columns)}")
-        print(f"  Domain hint: {'sales' if 'revenue' in df.columns or 'net_sales' in df.columns else 'mixed'}")
-        print()
+with open(os.path.join(OUT, "sales_export_erp.csv"), "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["invoice_id","invoice_date","product_name","product_category","market","qty","net_sales","client_id","export_program","markdown_pct"])
+    for i in range(20):
+        p = prod_cycle_c[i]
+        w.writerow([f"EXP-{3001+i}", dates_c[i], p, cats[p], "West", qty_c[i], v_c[i], f"CLIENT-{i+1:03d}", camps_c[i], disc_c[i]])
 
-    print(f"All test datasets saved to {output_path}")
-    return datasets
+# Verify
+total_a = d(sum(v_a))
+total_b = d(sum(v_b))
+total_c = d(sum(v_c))
+combined = d(total_a + total_b + total_c)
+after_del = d(total_b + total_c)
 
+print(f"Dataset A: {total_a} (target {targets['A']}) {'OK' if abs(total_a-targets['A'])<0.01 else 'FAIL'}")
+print(f"Dataset B: {total_b} (target {targets['B']}) {'OK' if abs(total_b-targets['B'])<0.01 else 'FAIL'}")
+print(f"Dataset C: {total_c} (target {targets['C']}) {'OK' if abs(total_c-targets['C'])<0.01 else 'FAIL'}")
+print(f"Combined:  {combined} (target 951138.13) {'OK' if abs(combined-951138.13)<0.01 else 'FAIL'}")
+print(f"After del: {after_del} (target 584158.25) {'OK' if abs(after_del-584158.25)<0.01 else 'FAIL'}")
 
-if __name__ == "__main__":
-    save_test_datasets()
+assert abs(total_a - targets["A"]) < 0.01
+assert abs(total_b - targets["B"]) < 0.01
+assert abs(total_c - targets["C"]) < 0.01
+assert abs(combined - 951138.13) < 0.01
+assert abs(after_del - 584158.25) < 0.01
+print("\nAll assertions passed.")
+print(f"Files written to {OUT}")
+for fn in sorted(os.listdir(OUT)):
+    fpath = os.path.join(OUT, fn)
+    with open(fpath) as f:
+        lines = f.readlines()
+    print(f"  {fn}: {len(lines)-1} data rows")

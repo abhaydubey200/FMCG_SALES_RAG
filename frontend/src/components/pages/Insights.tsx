@@ -3,9 +3,11 @@
 import { useState, useEffect } from "react";
 import { Lightbulb, AlertTriangle, CheckCircle, Info, Loader2 } from "lucide-react";
 import { generateInsights, getDataStatus } from "@/lib/api/client";
-import { cn, getInsightIcon, getInsightBorder } from "@/lib/utils";
+import { cn, getInsightBorder } from "@/lib/utils";
 import { Badge } from "@/components/common/Badge";
 import { EmptyState } from "@/components/common/EmptyState";
+import { PageHeader } from "@/components/common/PageHeader";
+import { LoadingState } from "@/components/common/LoadingState";
 
 interface Insight {
   type: "warning" | "success" | "info";
@@ -57,16 +59,8 @@ export function InsightsPage() {
   if (initialLoading) {
     return (
       <div className="p-6">
-        <h1 className="text-lg font-bold text-slate-900 mb-4">AI Insights</h1>
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="card animate-pulse">
-              <div className="h-4 w-48 bg-slate-200 rounded mb-2" />
-              <div className="h-3 w-full bg-slate-100 rounded mb-1" />
-              <div className="h-3 w-2/3 bg-slate-100 rounded" />
-            </div>
-          ))}
-        </div>
+        <PageHeader title="AI Insights" subtitle="AI-generated business patterns and anomalies" />
+        <LoadingState layout="list" lines={4} />
       </div>
     );
   }
@@ -74,7 +68,7 @@ export function InsightsPage() {
   if (!hasData) {
     return (
       <div className="p-6">
-        <h1 className="text-lg font-bold text-slate-900 mb-4">AI Insights</h1>
+        <PageHeader title="AI Insights" subtitle="AI-generated business patterns and anomalies" />
         <EmptyState
           icon="💡"
           title="No Data for Insights"
@@ -86,65 +80,52 @@ export function InsightsPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-slate-900">AI Insights</h1>
-        <button
-          onClick={handleGenerate}
-          disabled={loading}
-          className={cn(
-            "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
-            loading
-              ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-              : "bg-brand-600 text-white hover:bg-brand-700"
-          )}
-        >
-          {loading ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Analyzing...
-            </>
-          ) : (
-            <>
-              <Lightbulb className="w-4 h-4" />
-              Generate Insights
-            </>
-          )}
-        </button>
-      </div>
+      <PageHeader
+        title="AI Insights"
+        subtitle="AI-generated business patterns and anomalies"
+        action={
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className={cn("btn-primary text-sm", loading && "opacity-50 cursor-not-allowed")}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <Lightbulb className="w-4 h-4" />
+                Generate Insights
+              </>
+            )}
+          </button>
+        }
+      />
 
       {insights.length > 0 ? (
         <div className="space-y-3">
           {insights.map((insight, i) => (
             <div
               key={i}
-              className={cn(
-                "card border-l-4",
-                getInsightBorder(insight.type)
-              )}
+              className={cn("card border-l-4", getInsightBorder(insight.type))}
             >
               <div className="flex items-start gap-3">
                 <span className="shrink-0 mt-0.5">{ICONS[insight.type]}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="card-header">{insight.title}</div>
-                  <div className="card-body">{insight.description}</div>
-                  <div className="card-meta">
-                    <span>
+                  <div className="card-title">{insight.title}</div>
+                  <p className="text-sm text-slate-600 mt-1 leading-relaxed">{insight.description}</p>
+                  <div className="flex items-center gap-3 mt-2">
+                    <span className="text-xs text-slate-500">
                       Impact:{" "}
-                      <Badge
-                        variant={
-                          insight.impact === "high" ? "danger" : "warning"
-                        }
-                      >
+                      <Badge variant={insight.impact === "high" ? "danger" : "warning"}>
                         {insight.impact}
                       </Badge>
                     </span>
-                    <span>
+                    <span className="text-xs text-slate-500">
                       Confidence:{" "}
-                      <Badge
-                        variant={
-                          insight.confidence === "high" ? "success" : "neutral"
-                        }
-                      >
+                      <Badge variant={insight.confidence === "high" ? "success" : "neutral"}>
                         {insight.confidence}
                       </Badge>
                     </span>
