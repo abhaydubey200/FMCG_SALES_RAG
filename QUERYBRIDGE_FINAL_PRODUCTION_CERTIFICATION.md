@@ -248,7 +248,7 @@ tests/benchmark_final.py             exclusion ground truth added
 | Suite | Result |
 |---|---|
 | `tests/e2e/` (SQL security + ground truths + workspace isolation) | 47 passed |
-| `tests/test_causal_routing.py` | 5 passed |
+| `tests/test_causal_routing.py` | 9 passed (26 routing cases + no-fabrication guardrails) |
 | `tests/test_classifier.py` + `test_metrics.py` (live DB) | 19 passed |
 | `tests/benchmark_final.py` | 33/33 PASS, 0 failures, 0 LLM |
 | Concurrency battery (10×) | 10/10, 0 errors |
