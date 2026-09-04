@@ -197,9 +197,11 @@ fake tables in the API responses (all values rendered from live evidence).
   the dataset dimensions support.
 - The 7-doc knowledge base is seeded from tracked markdown; PDF variants exist
   but md is the canonical corpus.
-- `test_retrieval.py` (legacy V1 pipeline expectations) has 5 pre-existing
-  failures on both pristine and fixed trees (Groq rate limits + stale contract) —
-  not regressions; the authoritative retrieval coverage is the e2e suite.
+- `test_retrieval.py` (legacy V1 retrieval primitives) was made deterministic:
+  conflict detection is unit-tested with synthetic chunks, the LRU cache
+  contract is asserted without live-LLM round trips, and unanswerable
+  classification is checked at the classifier level — all 9 pass with no LLM
+  dependence. V2 grounded/unsupported behavior is covered by the e2e suite.
 
 ## 18. Remaining Technical Debt
 
@@ -249,7 +251,9 @@ tests/benchmark_final.py             exclusion ground truth added
 |---|---|
 | `tests/e2e/` (SQL security + ground truths + workspace isolation) | 47 passed |
 | `tests/test_causal_routing.py` | 9 passed (26 routing cases + no-fabrication guardrails) |
+| `tests/test_retrieval.py` | 9 passed (deterministic, no LLM dependence) |
 | `tests/test_classifier.py` + `test_metrics.py` (live DB) | 19 passed |
+| `tests/test_causal_routing.py` + `test_retrieval.py` (offline) | 18 passed |
 | `tests/benchmark_final.py` | 33/33 PASS, 0 failures, 0 LLM |
 | Concurrency battery (10×) | 10/10, 0 errors |
 | Live causal battery (10 questions) | all COMPLEX, 1 LLM call each, honest |
