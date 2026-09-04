@@ -53,7 +53,9 @@ CANONICAL_MEASURES = {
                            "average_price", "retail_price", "list_price"],
               "agg": "AVG", "type": "measure"},
     "discount": {"aliases": ["discount", "discount_pct", "discount_percent", "discount_rate",
-                              "reduction", "markdown"],
+                              "reduction", "markdown", "promo_pct", "promo_percent",
+                              "promotion_pct", "promotion_percent", "promo_discount",
+                              "promotional_discount", "promo_rate"],
                  "agg": "AVG", "type": "measure"},
     "impressions": {"aliases": ["impressions", "views", "reach", "ad_views", "impressions_count"],
                     "agg": "SUM", "type": "measure"},
@@ -165,12 +167,27 @@ class DatasetProfile:
 # DATABASE HELPERS
 # ═══════════════════════════════════════════════════════════════════════
 
-def _get_pg_connection():
-    """Get a fresh PostgreSQL connection."""
+def _get_pg_connection(retries: int = 2, delay: float = 0.25):
+    """Get a fresh PostgreSQL connection with bounded retry.
+
+    A single connect() can transiently fail right after container recreate
+    (pool/DNS/accept warm-up). Retrying a couple of times with a short delay
+    rides out the blip instead of misreporting an empty workspace. This is a
+    connection-level retry only — never a query retry.
+    """
+    import time as _time
     import psycopg2
     if not config.USE_POSTGRESQL or not config.DATABASE_URL:
         raise RuntimeError("PostgreSQL required for dynamic data engine")
-    return psycopg2.connect(config.DATABASE_URL)
+    last_exc = None
+    for attempt in range(max(1, retries + 1)):
+        try:
+            return psycopg2.connect(config.DATABASE_URL, connect_timeout=10)
+        except Exception as e:  # psycopg2.OperationalError et al.
+            last_exc = e
+            if attempt < retries:
+                _time.sleep(delay * (attempt + 1))
+    raise RuntimeError(f"Database unavailable: {last_exc}") from last_exc
 
 
 def _safe_table_name(name: str) -> str:
@@ -476,7 +493,10 @@ def ingest_file(file_bytes: bytes, filename: str,
 
     ext = Path(filename).suffix.lower()
     file_hash = hashlib.md5(file_bytes).hexdigest()[:12]
-    dataset_id = f"{Path(filename).stem}_{file_hash}"
+    # Workspace-namespaced id: two workspaces may upload the SAME bytes/filename
+    # without colliding on dataset_id (which is also the physical table name).
+    ws_tag = _safe_table_name(workspace_id)
+    dataset_id = f"{ws_tag}__{Path(filename).stem}_{file_hash}"
 
     conn = _get_pg_connection()
     try:
@@ -565,8 +585,19 @@ def _ingest_dataframe(conn, cur, df: pd.DataFrame, filename: str, ext: str,
         INSERT INTO datasets (dataset_id, asset_id, workspace_id, filename, file_type,
                              file_size_bytes, row_count, col_count, quality_score)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (dataset_id) DO UPDATE SET
+            row_count = EXCLUDED.row_count,
+            col_count = EXCLUDED.col_count,
+            quality_score = EXCLUDED.quality_score,
+            uploaded_at = NOW()
     """, (dataset_id, asset_id, workspace_id, filename, ext.lstrip("."),
           file_size, profile.row_count, profile.col_count, profile.quality_score))
+
+    # Idempotent re-ingest: same file (same dataset_id) uploaded again must
+    # not duplicate column/quality metadata rows. Clear prior children first;
+    # assets/datasets rows are upserted below.
+    cur.execute("DELETE FROM dataset_columns WHERE dataset_id = %s", (dataset_id,))
+    cur.execute("DELETE FROM data_quality_results WHERE dataset_id = %s", (dataset_id,))
 
     # Store column metadata
     for cp in profile.columns:
@@ -765,8 +796,11 @@ def list_datasets(workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
         conn.close()
 
 
-def get_dataset(dataset_id: str) -> Optional[dict]:
-    """Get full dataset info including profile and preview."""
+def get_dataset(dataset_id: str, workspace_id: str = DEFAULT_WORKSPACE) -> Optional[dict]:
+    """Get full dataset info including profile and preview.
+
+    Workspace-scoped: a dataset is only visible within its owning workspace.
+    """
     conn = _get_pg_connection()
     try:
         cur = conn.cursor()
@@ -774,8 +808,8 @@ def get_dataset(dataset_id: str) -> Optional[dict]:
             SELECT a.*, d.filename, d.file_type, d.file_size_bytes, d.quality_score, d.version
             FROM assets a
             LEFT JOIN datasets d ON d.asset_id = a.asset_id AND d.is_current = TRUE
-            WHERE a.asset_id = %s
-        """, (dataset_id,))
+            WHERE a.asset_id = %s AND a.workspace_id = %s
+        """, (dataset_id, workspace_id))
         cols = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         if not row:
@@ -842,15 +876,20 @@ def get_dataset(dataset_id: str) -> Optional[dict]:
         conn.close()
 
 
-def delete_dataset(dataset_id: str) -> bool:
-    """Delete a dataset, its physical table, and all metadata."""
+def delete_dataset(dataset_id: str, workspace_id: str = DEFAULT_WORKSPACE) -> bool:
+    """Delete a dataset, its physical table, and all metadata.
+
+    Workspace-scoped: an asset owned by another workspace cannot be deleted
+    from here (returns False → caller reports 404).
+    """
     conn = _get_pg_connection()
     try:
         conn.autocommit = False
         cur = conn.cursor()
 
-        # Get table name
-        cur.execute("SELECT table_name FROM assets WHERE asset_id = %s", (dataset_id,))
+        # Get table name — must be owned by the requesting workspace
+        cur.execute("SELECT table_name FROM assets WHERE asset_id = %s AND workspace_id = %s",
+                    (dataset_id, workspace_id))
         row = cur.fetchone()
         if not row:
             return False
@@ -886,6 +925,83 @@ def delete_dataset(dataset_id: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 # DYNAMIC ANALYTICS ENGINE
 # ═══════════════════════════════════════════════════════════════════════
+
+def reconcile_alias_mappings(workspace_id: str = DEFAULT_WORKSPACE) -> int:
+    """Idempotently backfill semantic mappings for physical columns that match a
+    canonical measure/dimension alias but were ingested under an older alias list
+    (e.g. promo_pct → discount). Never downgrades an existing approved mapping.
+
+    Returns the number of mapping rows added/upgraded.
+    """
+    added = 0
+    try:
+        conn = _get_pg_connection()
+    except Exception:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT a.asset_id, a.table_name FROM assets a
+            WHERE a.workspace_id = %s AND a.status = 'ready' AND a.table_name IS NOT NULL
+        """, (workspace_id,))
+        assets = cur.fetchall()
+        for asset_id, table_name in assets:
+            try:
+                _sanitize_sql_identifier(table_name)
+                cur.execute(f'SELECT column_name FROM information_schema.columns WHERE table_name = %s', (table_name,))
+            except Exception:
+                continue
+            for (col,) in cur.fetchall():
+                name_lower = str(col).lower().replace(" ", "_").replace("-", "_")
+                best_concept, best_type, best_conf = None, None, 0.0
+                for concept, info in CANONICAL_DIMENSIONS.items():
+                    for alias in info["aliases"]:
+                        if alias == name_lower:
+                            if 0.95 > best_conf:
+                                best_concept, best_type, best_conf = concept, info["type"], 0.95
+                            break
+                        if alias in name_lower and 0.7 > best_conf:
+                            best_concept, best_type, best_conf = concept, info["type"], 0.7
+                for concept, info in CANONICAL_MEASURES.items():
+                    for alias in info["aliases"]:
+                        conf = 0.95 if alias == name_lower else (0.7 if alias in name_lower else 0.0)
+                        if conf and any(s in name_lower for s in ("_date", "_time", "_day", "_id")):
+                            conf = min(conf, 0.4)
+                        if conf > best_conf:
+                            best_concept, best_type, best_conf = concept, info["type"], conf
+                if not best_concept or best_conf < 0.7:
+                    continue
+                cur.execute(
+                    "SELECT canonical_concept, concept_type, confidence FROM semantic_mappings "
+                    "WHERE asset_id = %s AND source_column = %s", (asset_id, col))
+                existing = cur.fetchone()
+                if existing and existing[2] is not None and existing[2] >= best_conf:
+                    continue
+                if existing:
+                    cur.execute("""
+                        UPDATE semantic_mappings SET canonical_concept = %s, concept_type = %s,
+                               confidence = %s, approved = TRUE, updated_at = NOW()
+                        WHERE asset_id = %s AND source_column = %s
+                    """, (best_concept, best_type, best_conf, asset_id, col))
+                else:
+                    cur.execute("""
+                        INSERT INTO semantic_mappings (workspace_id, asset_id, table_name, source_column,
+                                                      canonical_concept, concept_type, confidence,
+                                                      mapping_method, approved)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'reconcile', TRUE)
+                    """, (workspace_id, asset_id, table_name, col, best_concept, best_type, best_conf))
+                added += 1
+        conn.commit()
+        return added
+    except Exception:
+        conn.rollback()
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 def discover_available_data(workspace_id: str = DEFAULT_WORKSPACE) -> dict:
     """Discover all available tables, columns, and semantic mappings for a workspace.
@@ -1252,7 +1368,8 @@ def build_dynamic_semantic_context(workspace_id: str = DEFAULT_WORKSPACE) -> str
 # These replace legacy hardcoded queries when workspace data exists.
 # ═══════════════════════════════════════════════════════════════════════
 
-def _deduplicate_measure_entries(entries: List[dict]) -> List[dict]:
+def _deduplicate_measure_entries(entries: List[dict],
+                                 workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
     """Deduplicate measure entries that belong to the same source file.
     Multi-sheet Excel uploads create multiple tables sharing a base prefix
     (e.g. 'myfile_abc123__sheet1' and 'myfile_abc123__sheet2').
@@ -1262,11 +1379,17 @@ def _deduplicate_measure_entries(entries: List[dict]) -> List[dict]:
     if not entries:
         return []
 
-    # Group by base asset: table name before first '__' if present
+    # Physical table names are workspace-namespaced ('{ws}__{stem}_{hash}')
+    # and multi-sheet siblings append '__{sheet}'. Strip the workspace
+    # prefix BEFORE grouping so each uploaded file keeps its own base asset.
+    ws_prefix = f"{_safe_table_name(workspace_id)}__"
+
+    # Group by base asset: remainder of table name before first '__' if present
     groups: Dict[str, List[dict]] = {}
     for e in entries:
         tbl = e.get("table", "")
-        base = tbl.split("__")[0] if "__" in tbl else tbl
+        stripped = tbl[len(ws_prefix):] if tbl.startswith(ws_prefix) else tbl
+        base = stripped.split("__")[0] if "__" in stripped else stripped
         groups.setdefault(base, []).append(e)
 
     deduped: List[dict] = []
@@ -1310,7 +1433,7 @@ def workspace_total_revenue(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[f
     revenue_entries = data["available_measures"].get("revenue", [])
     if not revenue_entries:
         return None
-    entries = _deduplicate_measure_entries(revenue_entries)
+    entries = _deduplicate_measure_entries(revenue_entries, workspace_id)
     total = 0.0
     conn = None
     try:
@@ -1346,7 +1469,7 @@ def workspace_total_quantity(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[
     entries = data["available_measures"].get("quantity", [])
     if not entries:
         return None
-    entries = _deduplicate_measure_entries(entries)
+    entries = _deduplicate_measure_entries(entries, workspace_id)
     total = 0.0
     conn = None
     try:
@@ -1389,7 +1512,7 @@ def workspace_total_spend(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[flo
     entries = data["available_measures"].get("spend", [])
     if not entries:
         return None
-    entries = _deduplicate_measure_entries(entries)
+    entries = _deduplicate_measure_entries(entries, workspace_id)
     total = 0.0
     conn = None
     try:
@@ -1418,6 +1541,303 @@ def workspace_total_spend(workspace_id: str = DEFAULT_WORKSPACE) -> Optional[flo
             pass
 
 
+# Measures aggregated with SUM across tables (additive)
+_SUM_AGGREGATE_MEASURES = {
+    "revenue", "quantity", "spend", "profit", "cost", "impressions",
+    "clicks", "conversions", "attribution_revenue", "orders", "ltv",
+}
+# Measures aggregated with AVG across tables (rate-like: discount %, margin %, price, rating)
+_AVG_AGGREGATE_MEASURES = {
+    "discount", "margin", "price", "rating", "roas", "discount_pct",
+    "margin_pct", "discount_rate", "avg_rating",
+}
+
+
+def workspace_metric_total(metric: str, workspace_id: str = DEFAULT_WORKSPACE) -> Optional[float]:
+    """Compute a total for ANY canonical measure across ALL workspace tables.
+
+    SUM-style measures (revenue, quantity, spend, ...) are summed per table then
+    across tables. AVG-style measures (discount, margin, ...) are combined as a
+    row-count-weighted average so the result equals the average over all rows.
+
+    Returns None when the measure is not present in the workspace.
+    Raises RuntimeError on database failure.
+    """
+    if not metric:
+        return None
+    data = discover_available_data(workspace_id)
+    entries = data["available_measures"].get(metric, [])
+    if not entries:
+        return None
+    entries = _deduplicate_measure_entries(entries, workspace_id)
+    is_avg = metric in _AVG_AGGREGATE_MEASURES or (
+        metric not in _SUM_AGGREGATE_MEASURES and
+        any("discount" in metric or "margin" in metric or "rating" in metric or "roas" in metric or "price" in metric for _ in [0])
+    )
+    conn = None
+    try:
+        conn = _get_pg_connection()
+        cur = conn.cursor()
+        total = 0.0
+        weight_total = 0.0
+        for entry in entries:
+            table = entry["table"]
+            col = entry["column"]
+            _sanitize_sql_identifier(table)
+            _sanitize_sql_identifier(col)
+            if is_avg:
+                cur.execute(f'SELECT AVG("{col}"), COUNT("{col}") FROM "{table}"')
+                avg_val, cnt = cur.fetchone()
+                if avg_val is not None and cnt:
+                    total += float(avg_val) * float(cnt)
+                    weight_total += float(cnt)
+            else:
+                cur.execute(f'SELECT SUM("{col}") FROM "{table}"')
+                val = cur.fetchone()[0]
+                if val:
+                    total += float(val)
+        if is_avg:
+            return round(total / weight_total, 2) if weight_total else None
+        return round(total, 2) if total else None
+    except Exception as e:
+        raise RuntimeError(f"Metric ({metric}) calculation failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def workspace_metric_average(metric: str, workspace_id: str = DEFAULT_WORKSPACE) -> Optional[float]:
+    """Row-count-weighted AVG for ANY canonical measure across workspace tables.
+
+    Combines AVG per table weighted by row count so the result equals the
+    average over every row in the workspace (e.g. mean revenue per order).
+    Returns None when the measure is not present. Raises RuntimeError on DB failure.
+    """
+    if not metric:
+        return None
+    data = discover_available_data(workspace_id)
+    entries = data["available_measures"].get(metric, [])
+    if not entries:
+        return None
+    entries = _deduplicate_measure_entries(entries, workspace_id)
+    conn = None
+    try:
+        conn = _get_pg_connection()
+        cur = conn.cursor()
+        total = 0.0
+        weight_total = 0.0
+        for entry in entries:
+            table = entry["table"]
+            col = entry["column"]
+            _sanitize_sql_identifier(table)
+            _sanitize_sql_identifier(col)
+            cur.execute(f'SELECT AVG("{col}"), COUNT("{col}") FROM "{table}"')
+            avg_val, cnt = cur.fetchone()
+            if avg_val is not None and cnt:
+                total += float(avg_val) * float(cnt)
+                weight_total += float(cnt)
+        return round(total / weight_total, 2) if weight_total else None
+    except Exception as e:
+        raise RuntimeError(f"Metric ({metric}) average failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def workspace_year_coverage(workspace_id: str = DEFAULT_WORKSPACE) -> List[int]:
+    """Distinct calendar years present across workspace date columns.
+
+    Returns [] when no date dimension is mapped. Raises RuntimeError on DB failure
+    (never silently reports an empty year set for a DB error).
+    """
+    try:
+        data = discover_available_data(workspace_id)
+    except Exception as e:
+        raise RuntimeError(f"Year coverage failed: {e}")
+    date_entries = data["available_dimensions"].get("date", [])
+    if not date_entries:
+        return []
+    years: set = set()
+    conn = None
+    try:
+        conn = _get_pg_connection()
+        cur = conn.cursor()
+        for e in date_entries:
+            tbl = e["table"]
+            col = e["column"]
+            try:
+                _sanitize_sql_identifier(tbl)
+                _sanitize_sql_identifier(col)
+                cur.execute(f'SELECT DISTINCT EXTRACT(YEAR FROM "{col}"::date) FROM "{tbl}" WHERE "{col}" IS NOT NULL')
+                for row in cur.fetchall():
+                    if row[0] is not None:
+                        years.add(int(row[0]))
+            except Exception:
+                continue
+        return sorted(years)
+    except Exception as e:
+        raise RuntimeError(f"Year coverage query failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def workspace_metric_by_dimension(
+    metric: str = "revenue",
+    dimension: str = "region",
+    workspace_id: str = DEFAULT_WORKSPACE,
+    limit: Optional[int] = None,
+    order: str = "desc",
+) -> List[dict]:
+    """Compute a canonical measure grouped by a dimension across ALL workspace tables.
+
+    Rows are merged in Python across tables (each table queried separately, then
+    grouped values summed / weighted-averaged by shared dimension value).
+    order="desc" sorts high→low (top N); order="asc" sorts low→high (bottom N).
+    Returns [] when the measure or dimension is unavailable.
+    """
+    try:
+        data = discover_available_data(workspace_id)
+    except Exception:
+        return []
+    measure_entries = data["available_measures"].get(metric, [])
+    dim_entries = data["available_dimensions"].get(dimension, [])
+    if not measure_entries or not dim_entries:
+        return []
+
+    measure_by_table = {e["table"]: e for e in measure_entries}
+    dim_by_table = {e["table"]: e for e in dim_entries}
+    common_tables = set(measure_by_table.keys()) & set(dim_by_table.keys())
+    if not common_tables:
+        return []
+
+    deduped_measure = _deduplicate_measure_entries(measure_entries, workspace_id)
+    deduped_tables = {e["table"] for e in deduped_measure}
+    target_tables = (common_tables & deduped_tables) or common_tables
+
+    is_avg = metric in _AVG_AGGREGATE_MEASURES or (
+        metric not in _SUM_AGGREGATE_MEASURES
+        and any(k in metric for k in ("discount", "margin", "rating", "roas", "price"))
+    )
+    sums: Dict[str, float] = {}
+    weights: Dict[str, float] = {}
+    try:
+        conn = _get_pg_connection()
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        for tbl in target_tables:
+            m = measure_by_table[tbl]
+            d = dim_by_table[tbl]
+            m_col = m["column"]
+            d_col = d["column"]
+            _sanitize_sql_identifier(tbl)
+            _sanitize_sql_identifier(m_col)
+            _sanitize_sql_identifier(d_col)
+            try:
+                if is_avg:
+                    cur.execute(f"""
+                        SELECT "{d_col}" AS dim_val, AVG("{m_col}") AS val, COUNT("{m_col}") AS n
+                        FROM "{tbl}" WHERE "{d_col}" IS NOT NULL AND "{m_col}" IS NOT NULL
+                        GROUP BY dim_val
+                    """)
+                    for row in cur.fetchall():
+                        key = str(row[0])
+                        v = float(row[1] or 0)
+                        n = float(row[2] or 0)
+                        sums[key] = sums.get(key, 0.0) + v * n
+                        weights[key] = weights.get(key, 0.0) + n
+                else:
+                    cur.execute(f"""
+                        SELECT "{d_col}" AS dim_val, SUM("{m_col}") AS val
+                        FROM "{tbl}" WHERE "{d_col}" IS NOT NULL
+                        GROUP BY dim_val
+                    """)
+                    for row in cur.fetchall():
+                        key = str(row[0])
+                        sums[key] = sums.get(key, 0.0) + float(row[1] or 0)
+            except Exception:
+                continue
+        if not sums:
+            return []
+        rows = []
+        for key, val in sums.items():
+            if is_avg:
+                w = weights.get(key, 0.0)
+                if w:
+                    rows.append({"dimension": key, metric: round(val / w, 2)})
+            else:
+                rows.append({"dimension": key, metric: round(val, 2)})
+        rows.sort(key=lambda x: x.get(metric, 0), reverse=(order != "asc"))
+        if limit:
+            rows = rows[:limit]
+        return rows
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def workspace_dimension_values(dimension: str, workspace_id: str = DEFAULT_WORKSPACE) -> List[str]:
+    """Distinct values for a dimension across ALL workspace tables.
+
+    Returns the actual stored values (original casing, sorted) so query
+    resolution can match user language against real data instead of a
+    hardcoded vocabulary. Returns [] when the dimension is unavailable.
+    """
+    try:
+        data = discover_available_data(workspace_id)
+    except Exception:
+        return []
+    dim_entries = data["available_dimensions"].get(dimension, [])
+    if not dim_entries:
+        return []
+    by_table = {e["table"]: e for e in dim_entries}
+    seen: Dict[str, str] = {}
+    conn = None
+    try:
+        conn = _get_pg_connection()
+        cur = conn.cursor()
+        for tbl, d in by_table.items():
+            d_col = d["column"]
+            try:
+                _sanitize_sql_identifier(tbl)
+                _sanitize_sql_identifier(d_col)
+                cur.execute(f'SELECT DISTINCT "{d_col}" AS v FROM "{tbl}" WHERE "{d_col}" IS NOT NULL')
+                for row in cur.fetchall():
+                    key = str(row[0]).strip()
+                    if key:
+                        seen.setdefault(key.lower(), key)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                continue
+        return [seen[k] for k in sorted(seen)]
+    except Exception:
+        return []
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def workspace_revenue_by_dimension(dimension: str, workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
     """Get revenue grouped by a dimension across ALL matching tables."""
     try:
@@ -1437,7 +1857,7 @@ def workspace_revenue_by_dimension(dimension: str, workspace_id: str = DEFAULT_W
         return []
 
     # Deduplicate revenue entries
-    rev_entries_deduped = _deduplicate_measure_entries(rev_entries)
+    rev_entries_deduped = _deduplicate_measure_entries(rev_entries, workspace_id)
     rev_tables_deduped = {e["table"] for e in rev_entries_deduped}
     # Only use tables that are both in common and deduped
     target_tables = common_tables & rev_tables_deduped
@@ -1475,6 +1895,101 @@ def workspace_revenue_by_dimension(dimension: str, workspace_id: str = DEFAULT_W
         result = [{"dimension": k, "revenue": round(v, 2)} for k, v in merged.items()]
         result.sort(key=lambda x: x["revenue"], reverse=True)
         return result
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def workspace_metric_trend(metric: str = "revenue", workspace_id: str = DEFAULT_WORKSPACE) -> List[dict]:
+    """Get monthly trend for ANY canonical measure across all workspace tables.
+
+    Combines tables that contain BOTH the measure column and a date column,
+    merging by YYYY-MM bucket. Returns rows [{month, <metric>: value}].
+    """
+    try:
+        data = discover_available_data(workspace_id)
+    except Exception:
+        return []
+    measure_entries = data["available_measures"].get(metric, [])
+    date_entries = data["available_dimensions"].get("date", [])
+    if not measure_entries or not date_entries:
+        return []
+    measure_by_table = {e["table"]: e for e in measure_entries}
+    date_by_table = {e["table"]: e for e in date_entries}
+    common = set(measure_by_table.keys()) & set(date_by_table.keys())
+    if not common:
+        return []
+    deduped = _deduplicate_measure_entries(measure_entries, workspace_id)
+    deduped_tables = {e["table"] for e in deduped}
+    target_tables = (common & deduped_tables) or common
+    is_avg = metric in _AVG_AGGREGATE_MEASURES or (
+        metric not in _SUM_AGGREGATE_MEASURES
+        and any(k in metric for k in ("discount", "margin", "rating", "roas", "price"))
+    )
+    sums: Dict[str, float] = {}
+    weights: Dict[str, float] = {}
+    try:
+        conn = _get_pg_connection()
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        for tbl in target_tables:
+            m = measure_by_table[tbl]
+            d = date_by_table[tbl]
+            m_col = m["column"]
+            d_col = d["column"]
+            _sanitize_sql_identifier(tbl)
+            _sanitize_sql_identifier(m_col)
+            _sanitize_sql_identifier(d_col)
+            try:
+                if is_avg:
+                    cur.execute(f"""
+                        SELECT TO_CHAR("{d_col}"::date, 'YYYY-MM') AS month,
+                               AVG("{m_col}") AS val, COUNT("{m_col}") AS n
+                        FROM "{tbl}"
+                        WHERE "{d_col}" IS NOT NULL AND "{m_col}" IS NOT NULL
+                        GROUP BY month ORDER BY month
+                    """)
+                    for row in cur.fetchall():
+                        key = str(row[0])
+                        v = float(row[1] or 0)
+                        n = float(row[2] or 0)
+                        sums[key] = sums.get(key, 0.0) + v * n
+                        weights[key] = weights.get(key, 0.0) + n
+                else:
+                    cur.execute(f"""
+                        SELECT TO_CHAR("{d_col}"::date, 'YYYY-MM') AS month,
+                               SUM("{m_col}") AS val
+                        FROM "{tbl}"
+                        WHERE "{d_col}" IS NOT NULL
+                        GROUP BY month ORDER BY month
+                    """)
+                    for row in cur.fetchall():
+                        key = str(row[0])
+                        sums[key] = sums.get(key, 0.0) + float(row[1] or 0)
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                continue
+        if not sums:
+            return []
+        rows = []
+        for key, val in sums.items():
+            if is_avg:
+                w = weights.get(key, 0.0)
+                if w:
+                    rows.append({"month": key, metric: round(val / w, 2)})
+            else:
+                rows.append({"month": key, metric: round(val, 2)})
+        rows.sort(key=lambda x: x["month"])
+        return rows
     except Exception:
         return []
     finally:
@@ -1542,7 +2057,7 @@ def workspace_top_entities(limit: int = 10, workspace_id: str = DEFAULT_WORKSPAC
     if not common_tables:
         return []
 
-    rev_entries_deduped = _deduplicate_measure_entries(rev_entries)
+    rev_entries_deduped = _deduplicate_measure_entries(rev_entries, workspace_id)
     rev_tables_deduped = {e["table"] for e in rev_entries_deduped}
     target_tables = common_tables & rev_tables_deduped
     if not target_tables:
@@ -1588,9 +2103,34 @@ def workspace_top_entities(limit: int = 10, workspace_id: str = DEFAULT_WORKSPAC
 
 
 def workspace_row_count(workspace_id: str = DEFAULT_WORKSPACE) -> int:
-    """Get total row count across all workspace assets."""
-    tables = get_workspace_tables(workspace_id)
-    return sum(t.get("row_count", 0) for t in tables)
+    """Get total row count across all workspace assets (COUNT(*), DB-verified)."""
+    try:
+        data = discover_available_data(workspace_id)
+    except Exception:
+        return 0
+    total = 0
+    conn = None
+    try:
+        conn = _get_pg_connection()
+        cur = conn.cursor()
+        for asset in data.get("assets", []):
+            tbl = asset.get("table_name")
+            if not tbl:
+                continue
+            try:
+                _sanitize_sql_identifier(tbl)
+                cur.execute(f'SELECT COUNT(*) FROM "{tbl}"')
+                total += int(cur.fetchone()[0] or 0)
+            except Exception:
+                continue
+        return total
+    except Exception:
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def workspace_column_names(table_name: str) -> List[str]:

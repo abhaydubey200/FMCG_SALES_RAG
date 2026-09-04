@@ -10,7 +10,7 @@ logger = logging.getLogger("agents.tools.workspace")
 def register_tools(registry):
     from src.agents.tools import ToolDef
 
-    def get_workspace_summary() -> Dict[str, Any]:
+    def get_workspace_summary(workspace_id: str = "default") -> Dict[str, Any]:
         """Get a summary of the current workspace state."""
         try:
             from src.analytics.dynamic_engine import (
@@ -18,17 +18,17 @@ def register_tools(registry):
                 workspace_total_quantity, workspace_total_spend, workspace_row_count,
                 discover_available_data,
             )
-            has_data = has_workspace_data()
+            has_data = has_workspace_data(workspace_id)
             if not has_data:
                 return {"has_data": False, "tables": [], "summary": "No data in workspace"}
 
-            tables = get_workspace_tables()
-            total_revenue = workspace_total_revenue() or 0
-            total_units = workspace_total_quantity() or 0
-            total_spend = workspace_total_spend() or 0
-            total_rows = workspace_row_count()
+            tables = get_workspace_tables(workspace_id)
+            total_revenue = workspace_total_revenue(workspace_id) or 0
+            total_units = workspace_total_quantity(workspace_id) or 0
+            total_spend = workspace_total_spend(workspace_id) or 0
+            total_rows = workspace_row_count(workspace_id)
 
-            data_disc = discover_available_data()
+            data_disc = discover_available_data(workspace_id)
             measures = list(data_disc.get("available_measures", {}).keys())
             dimensions = list(data_disc.get("available_dimensions", {}).keys())
 

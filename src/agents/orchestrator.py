@@ -1136,7 +1136,7 @@ Evidence:
 
 RULES:
 1. Use EXACT numbers from the DATA EVIDENCE. Never round, estimate, or fabricate numeric values.
-2. If the evidence shows total_revenue = 951138.13, say exactly 951138.13 — not "approximately $951K" or "$1.2M".
+2. Reproduce every numeric value EXACTLY as it appears in the data evidence (with its original precision) — never round, estimate, or approximate.
 3. Separate DATA EVIDENCE (deterministic numbers) from KNOWLEDGE EVIDENCE (document-derived information).
 4. If evidence is insufficient, say so honestly. Never guess or fill gaps with general knowledge.
 5. Cite the source of every claim.

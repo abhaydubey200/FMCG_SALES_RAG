@@ -60,8 +60,15 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-tfidf}
+      # Groq (fast synthesis path) — forwarded so the container can actually use it
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GROQ_TIMEOUT_SECONDS: ${GROQ_TIMEOUT_SECONDS:-30}
+      ENABLE_QUERY_CACHE: ${ENABLE_QUERY_CACHE:-true}
+      ENABLE_TEMPLATE_SYNTHESIS: ${ENABLE_TEMPLATE_SYNTHESIS:-true}
     volumes:
       - ./data:/app/data
     ports:
@@ -91,6 +98,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ragsql}:${POSTGRES_PASSWORD:-ragsql_secret_dev}@postgres:5432/${POSTGRES_DB:-ragsql}
       REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
     volumes:
       - ./data:/app/data
     networks:

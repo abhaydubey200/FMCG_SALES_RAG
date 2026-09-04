@@ -1,13 +1,26 @@
-# Amazon Sales & Marketing Intelligence Assistant
+# Amazon Sales & Marketing Intelligence Assistant — QueryBridge
 
-A RAG + Analytics assistant that lets a sales/marketing analyst ask
-natural-language questions over structured business data (products, sales,
-campaigns, customers, reviews) and unstructured business knowledge
-(marketing/pricing/product/customer strategy, campaign guidelines) — with
-answers that separate facts, calculated metrics, retrieved knowledge,
-reasoning, and what's genuinely unavailable.
+A RAG + Analytics assistant ("QueryBridge") that lets a sales/marketing analyst ask
+natural-language questions over structured business data (uploaded datasets) and
+unstructured business knowledge (policy/strategy documents) — with answers that
+separate verified evidence, calculated metrics, retrieved knowledge, and what is
+genuinely unavailable. The LLM is used only for language synthesis when needed:
+analytics, RAG retrieval, verification, and refusal logic are deterministic and
+0-LLM by default.
 
-Built for the Amazon AI Engineer pre-interview assignment.
+## Current runtime (V2.1+)
+
+- **Backend:** FastAPI (`src/api/main.py`) with the agentic `Orchestrator`
+  (`src/agents/orchestrator_v2.py`): deterministic router → semantic resolver →
+  parallel analytics (SQL) + RAG → evidence contract → deterministic answer or
+  ONE bounded LLM synthesis call.
+- **Frontend:** Next.js App Router (`frontend/`), proxied by Nginx.
+- **Storage:** PostgreSQL + pgvector (Docker), Redis for state, TF-IDF embedding
+  pipeline with a 7-document / 33-chunk knowledge base.
+- **LLM providers:** Groq (fast synthesis, primary) with a strictly bounded
+  NVIDIA fallback (`src/llm/provider_policy.py`). `LLM_BACKEND=fallback` in the
+  legacy `.env` template is overridden by Docker (Groq is the active backend).
+- **Run everything:** `docker compose up -d` (see Quickstart below).
 
 ---
 
@@ -54,34 +67,32 @@ disguised as a feature.
 ## Quickstart
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Generate the synthetic dataset (creates data/warehouse.db)
-PYTHONPATH=. python3 src/ingestion/data_generator.py
-
-# 3. Build the knowledge-base vector store (creates data/vector_store.pkl)
-PYTHONPATH=. python3 src/retrieval/vector_store.py
-
-# 4. Start the API
-PYTHONPATH=. python3 -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
-
-# 5. (separate terminal) Start the UI
-API_BASE_URL=http://localhost:8000 streamlit run ui/streamlit_app.py
-
-# 6. Run tests
-PYTHONPATH=. python3 -m pytest tests/ -v
-
-# 7. Run the evaluation harness
-PYTHONPATH=. python3 src/evaluation/eval_runner.py
+cp .env.example .env   # then fill GROQ_API_KEY (and optionally NVIDIA LLM_API_KEY)
+docker compose up -d   # builds postgres+pgvector, redis, api, worker, frontend, nginx
 ```
 
-Example API call:
+- API: http://localhost:8000 (docs at `/docs`), UI: http://localhost:3000, nginx: http://localhost:80
+- The API auto-seeds the three certified demo datasets (Datasets A/B/C → total
+  revenue **951,138.13**) and the knowledge base on a fresh volume.
+- Verify: `curl http://localhost:8000/health` → `{"llm_backend":"groq",...}`.
+
+Local (non-Docker) development still works:
 ```bash
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Which campaign generated the highest ROAS?"}'
+pip install -r requirements.txt
+# backend needs DATABASE_URL/REDIS_URL (or use docker compose for infra)
+PYTHONPATH=. python3 -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+# UI:
+cd frontend && npm install && npm run dev
 ```
+
+Example API call (workspace-scoped):
+```bash
+curl -X POST http://localhost:8000/api/ai/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is total revenue?", "workspace_id": "default"}'
+```
+Both `/query` (legacy, default workspace) and `/api/ai/query`
+(workspace-scoped) are served.
 
 ---
 
@@ -97,13 +108,13 @@ Metrics`.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Backend | FastAPI + Pydantic | Async-capable, typed, auto-generated OpenAPI docs, matches assignment's recommended stack |
-| Structured data | SQLite | Zero-ops, single-file, fully SQL-compatible — swappable for PostgreSQL by changing only `src/analytics/sql_layer.py`'s connection layer; chosen over Postgres here because this dev sandbox has no way to install/run a Postgres server, and SQLite requires no server process at all |
-| Vector storage | In-process pickle (chunks + numpy vectors) | Fine at ~20-doc / ~100-chunk scale; documented migration path to pgvector/Qdrant in "Production scalability" below |
-| Embeddings | TF-IDF (default) / sentence-transformers (optional) | See "Environment Constraints" above |
-| Keyword search | BM25 (`rank_bm25`) | Standard, dependency-light, no model download needed |
-| LLM | Template fallback (default) / Ollama + Qwen2.5 (optional) | See "Environment Constraints" above |
-| Frontend | Streamlit | Fastest path to a functional analyst UI meeting Section 18's "does not need to be highly polished" |
+| Backend | FastAPI + Pydantic | Async-capable, typed, auto-generated OpenAPI docs |
+| Structured data | PostgreSQL + pgvector | Dockerized, real analytical SQL across uploaded datasets |
+| Vector storage | TF-IDF in-process index + pgvector schema | Fine at current corpus scale; pgvector table present for migration |
+| Embeddings | TF-IDF (default) | Deterministic, no model download; neural backend available |
+| Keyword/retrieval | Hybrid retriever over 33 knowledge chunks | see `src/retrieval/` |
+| LLM | Groq (primary) → bounded NVIDIA fallback → template-grounded fallback | see `src/llm/provider_policy.py`; deterministic 0-LLM for analytics/RAG |
+| Frontend | Next.js (App Router) + Nginx | Production-style UI served on :3000/:80 |
 
 ## 3. Dataset design
 
@@ -346,7 +357,14 @@ question.
 
 ---
 
-## Performance optimizations
+> **Note:** the sections below (14–15 and this performance log) are the
+> historical design log from earlier V1 phases and reference the legacy
+> SQLite/`fallback`-LLM stack. The live runtime is the V2.1+ PostgreSQL +
+> Groq/NVIDIA architecture in “Current runtime” at the top; current
+> measured latency is in the certification reports
+> (`QUERYBRIDGE_*_LATENCY_CERTIFICATION.md`).
+
+## Performance optimizations (V1 historical log)
 
 Rather than guess at bottlenecks, these were found by profiling the live
 pipeline (`cProfile` over repeated `pipeline.answer()` calls) and fixed
@@ -405,21 +423,24 @@ is in place upstream of it.
 
 ## Security
 
-- No API keys, passwords, or credentials are used by the default
-  configuration (`fallback` LLM backend, `tfidf` embeddings, local SQLite)
-  — there is nothing to leak in this dev sandbox's default state.
 - `.env.example` is committed; `.env` is git-ignored (see `.gitignore`).
-- If `LLM_BACKEND=ollama` is used, the Ollama server URL is configurable
-  via env var, not hardcoded.
-- **Production business-data protection** (documented per Section 21):
-  row-level tenant isolation on every table; encrypt the SQLite/Postgres
-  file and vector store at rest; put the API behind auth (OAuth2/JWT,
-  not currently implemented — this is a single-tenant dev deliverable);
-  redact or restrict `evidence`/raw structured-data fields in the `/query`
-  response for roles that shouldn't see row-level detail (a summarized
-  answer without the full evidence dump); log query access for audit,
-  since sales/marketing data (revenue, campaign spend, customer LTV) is
-  commercially sensitive even without being classic PII.
+  Real provider keys (Groq/NVIDIA) and the PostgreSQL password live only in
+  the local `.env` / Docker secrets, never in tracked files.
+- **Active runtime (V2.1+):** Groq is the primary LLM provider with a
+  strictly bounded NVIDIA fallback (`src/llm/provider_policy.py`); storage
+  is PostgreSQL (Docker), embeddings are the TF-IDF pipeline. Keys are
+  forwarded only to their own provider inside the API container.
+- Structured SQL is workspace-scoped and parameterized: raw user text
+  never becomes an SQL identifier or fragment (see `src/agents/tools/
+  sql_tools.py` and the `tests/e2e/test_sql_security.py` suite).
+- **Production business-data protection:** every workspace-owned entity
+  (datasets, documents, chunks, semantic mappings, conversations, cache
+  entries) carries a `workspace_id` and every read/write/list/delete path
+  enforces it — see `tests/e2e/test_workspace_isolation.py`. Put the API
+  behind auth (OAuth2/JWT) and encrypt volumes at rest before multi-tenant
+  production; redact raw evidence fields for roles that shouldn't see
+  row-level detail; log query access for audit, since sales/marketing data
+  (revenue, campaign spend, customer LTV) is commercially sensitive.
 
 ---
 
@@ -430,40 +451,31 @@ README.md
 requirements.txt
 .env.example
 data/
-  knowledge_base/*.md        # 5 policy documents
-  warehouse.db                # generated SQLite (run data_generator.py)
-  vector_store.pkl            # generated (run vector_store.py)
+  knowledge_base/*.md        # 7 policy/strategy documents (33 chunks after chunking)
+tests/
+  test_causal_routing.py     # causal-intent routing + honesty tests
+  test_classifier.py, test_metrics.py   # routing / metric unit tests
+  benchmark_final.py          # 33-question deterministic accuracy + latency benchmark
+  e2e/
+    test_sql_security.py      # SQL injection / identifier security suite
+    test_revenue_ground_truth.py  # certified analytics ground truths
+    test_workspace_isolation.py   # cross-workspace isolation matrix (Blocker 2)
 src/
   config.py
-  ingestion/
-    data_generator.py         # synthetic dataset
-    document_loader.py        # load/clean/chunk KB docs
-  retrieval/
-    embeddings.py             # pluggable TF-IDF / neural embedder
-    vector_store.py           # cosine-similarity search
-    keyword_search.py         # BM25
-    hybrid_retriever.py       # fusion + rerank
+  agents/
+    orchestrator_v2.py        # ACTIVE orchestration: router → semantic → evidence
+    router.py                 # deterministic query classifier (incl. CAUSAL intent)
+    semantic.py               # metric/dimension resolution
+    tools/                    # metrics, sql, rag, schema, workspace tools
+    specialists/              # analytics / rag agents
   analytics/
-    sql_layer.py               # parametrized business-metric queries
-  rag/
-    query_classifier.py       # routing
-    context_builder.py        # evidence fusion + conflict detection
-    prompt_templates.py       # system + evidence prompt
-    pipeline.py                # orchestration
+    dynamic_engine.py         # workspace-scoped SQL engine (canonical KPIs)
   llm/
-    base.py, factory.py
-    ollama_client.py           # real open-LLM connector
-    fallback_llm.py            # deterministic grounded fallback
+    provider_policy.py        # Groq primary → bounded NVIDIA fallback
+    groq_client.py, nvidia_client.py, query_cache.py
+  retrieval/                  # vector_store, keyword_search, hybrid_retriever
   api/
-    main.py, schemas.py       # FastAPI app
-  evaluation/
-    test_cases.json            # 38 test cases
-    eval_runner.py
-tests/
-  test_metrics.py, test_classifier.py, test_retrieval.py   # 22 tests, all passing
-docs/
-  architecture.md              # Mermaid diagram + component table
-  evaluation.md                 # methodology + real results + failure analysis
-ui/
-  streamlit_app.py             # Dashboard / AI Assistant / Document Management
+    main.py, schemas.py       # FastAPI app (workspace-scoped endpoints)
+frontend/
+  src/                         # Next.js App Router UI (AI Analyst / Data Center)
 ```

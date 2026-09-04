@@ -10,18 +10,18 @@ logger = logging.getLogger("agents.tools.rag")
 def register_tools(registry):
     from src.agents.tools import ToolDef
 
-    def vector_search(query: str, top_k: int = 5) -> Dict[str, Any]:
-        """Search documents using vector similarity."""
+    def vector_search(query: str, top_k: int = 5, workspace_id: str = "default") -> Dict[str, Any]:
+        """Search documents using vector similarity (workspace-scoped)."""
         try:
-            # Check cache first
+            # Check cache first — key includes workspace_id (isolation)
             from src.llm.query_cache import get_cached_rag, cache_rag_result
-            cached = get_cached_rag(f"vector:{query}:{top_k}")
+            cached = get_cached_rag(f"vector:{query}:{top_k}", workspace_id=workspace_id)
             if cached is not None:
                 return cached
 
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
-            results = pipeline.vector_store.search(query, top_k=top_k)
+            results = pipeline.vector_store.search(query, top_k=top_k, workspace_id=workspace_id)
             chunks = []
             for r in results:
                 chunk = r.chunk if hasattr(r, 'chunk') else r
@@ -34,23 +34,23 @@ def register_tools(registry):
                     "source_path": getattr(chunk, "metadata", {}).get("source_path", "") if hasattr(chunk, "metadata") else "",
                 })
             result = {"chunks": chunks, "count": len(chunks), "query": query}
-            cache_rag_result(f"vector:{query}:{top_k}", result)
+            cache_rag_result(f"vector:{query}:{top_k}", result, workspace_id=workspace_id)
             return result
         except Exception as e:
             logger.error("Vector search failed: %s", e)
             return {"chunks": [], "count": 0, "error": str(e)}
 
-    def keyword_search(query: str, top_k: int = 5) -> Dict[str, Any]:
-        """Search documents using keyword matching."""
+    def keyword_search(query: str, top_k: int = 5, workspace_id: str = "default") -> Dict[str, Any]:
+        """Search documents using keyword matching (workspace-scoped)."""
         try:
             from src.llm.query_cache import get_cached_rag, cache_rag_result
-            cached = get_cached_rag(f"keyword:{query}:{top_k}")
+            cached = get_cached_rag(f"keyword:{query}:{top_k}", workspace_id=workspace_id)
             if cached is not None:
                 return cached
 
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
-            results = pipeline.keyword_index.search(query, top_k=top_k)
+            results = pipeline.keyword_index.search(query, top_k=top_k, workspace_id=workspace_id)
             chunks = []
             for r in results:
                 chunk = r.chunk if hasattr(r, 'chunk') else r
@@ -61,22 +61,22 @@ def register_tools(registry):
                     "relevance_score": getattr(r, "score", 0.0),
                 })
             result = {"chunks": chunks, "count": len(chunks), "query": query}
-            cache_rag_result(f"keyword:{query}:{top_k}", result)
+            cache_rag_result(f"keyword:{query}:{top_k}", result, workspace_id=workspace_id)
             return result
         except Exception as e:
             return {"chunks": [], "count": 0, "error": str(e)}
 
-    def hybrid_search(query: str, top_k: int = 5) -> Dict[str, Any]:
-        """Combined vector + keyword search with reranking."""
+    def hybrid_search(query: str, top_k: int = 5, workspace_id: str = "default") -> Dict[str, Any]:
+        """Combined vector + keyword search with reranking (workspace-scoped)."""
         try:
             from src.llm.query_cache import get_cached_rag, cache_rag_result
-            cached = get_cached_rag(f"hybrid:{query}:{top_k}")
+            cached = get_cached_rag(f"hybrid:{query}:{top_k}", workspace_id=workspace_id)
             if cached is not None:
                 return cached
 
             from src.rag.pipeline import get_pipeline
             pipeline = get_pipeline()
-            results = pipeline.retriever.retrieve(query, top_k=top_k)
+            results = pipeline.retriever.retrieve(query, top_k=top_k, workspace_id=workspace_id)
             chunks = []
             for r in results:
                 chunk = r.chunk if hasattr(r, 'chunk') else r
@@ -88,18 +88,21 @@ def register_tools(registry):
                     "source_path": getattr(chunk, "metadata", {}).get("source_path", "") if hasattr(chunk, "metadata") else "",
                 })
             result = {"chunks": chunks, "count": len(chunks), "query": query}
-            cache_rag_result(f"hybrid:{query}:{top_k}", result, ttl=600)
+            cache_rag_result(f"hybrid:{query}:{top_k}", result, ttl=600, workspace_id=workspace_id)
             return result
         except Exception as e:
             return {"chunks": [], "count": 0, "error": str(e)}
 
-    def list_documents() -> Dict[str, Any]:
-        """List all indexed documents."""
+    def list_documents(workspace_id: str = "default") -> Dict[str, Any]:
+        """List indexed documents owned by the given workspace."""
         try:
             from src.rag.pipeline import get_pipeline
+            from src.ingestion.document_loader import _chunk_workspace_id
             pipeline = get_pipeline()
             docs = {}
             for c in pipeline.vector_store.chunks:
+                if _chunk_workspace_id(c) != workspace_id:
+                    continue
                 if c.document_id not in docs:
                     docs[c.document_id] = {
                         "document_id": c.document_id,

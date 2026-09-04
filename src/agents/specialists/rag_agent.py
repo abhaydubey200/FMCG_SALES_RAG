@@ -50,17 +50,21 @@ class RAGAgent(BaseAgent):
             step = message.input_data.get("step", "search")
             query = message.input_data.get("query", "")
             top_k = message.input_data.get("top_k", 5)
+            workspace_id = message.input_data.get("workspace_id", "default")
 
             if step == "search":
                 search_type = message.input_data.get("search_type", "hybrid")
                 if search_type == "vector":
-                    result = tools.call("vector_search", query=query, top_k=top_k)
+                    result = tools.call("vector_search", query=query, top_k=top_k,
+                                        workspace_id=workspace_id)
                 elif search_type == "keyword":
-                    result = tools.call("keyword_search", query=query, top_k=top_k)
+                    result = tools.call("keyword_search", query=query, top_k=top_k,
+                                        workspace_id=workspace_id)
                 else:
-                    result = tools.call("hybrid_search", query=query, top_k=top_k)
+                    result = tools.call("hybrid_search", query=query, top_k=top_k,
+                                        workspace_id=workspace_id)
             elif step == "list":
-                result = tools.call("list_documents")
+                result = tools.call("list_documents", workspace_id=workspace_id)
             else:
                 result = {"error": f"Unknown step: {step}"}
 

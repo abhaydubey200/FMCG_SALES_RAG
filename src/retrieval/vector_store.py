@@ -52,12 +52,30 @@ class VectorStore:
         self.chunks = data["chunks"]
         self.vectors = data["vectors"]
         self.embedder = data["embedder"]
+        # Re-tag workspace ownership from the documents registry so stale
+        # pickles (built before tagging) still honor per-workspace retrieval.
+        from src.ingestion.document_loader import _tag_chunks_with_workspace
+        self.chunks = _tag_chunks_with_workspace(self.chunks)
         return self
 
-    def search(self, query: str, top_k: int = None) -> List[ScoredChunk]:
+    def search(self, query: str, top_k: int = None,
+               workspace_id: str = None) -> List[ScoredChunk]:
+        """Search chunks. When workspace_id is given, only chunks owned by that
+        workspace are eligible — cross-workspace retrieval is impossible."""
         top_k = top_k or config.TOP_K_VECTOR
         if self.vectors is None or len(self.chunks) == 0:
             return []
+        if workspace_id is not None:
+            from src.ingestion.document_loader import _chunk_workspace_id
+            idx = [i for i, c in enumerate(self.chunks)
+                   if _chunk_workspace_id(c) == workspace_id]
+            if not idx:
+                return []
+            q_vec = self.embedder.embed([query])[0]
+            sims = self.vectors[idx] @ q_vec
+            order = np.argsort(-sims)[:top_k]
+            return [ScoredChunk(chunk=self.chunks[idx[i]], score=float(sims[i]))
+                    for i in order if sims[i] > 0]
         q_vec = self.embedder.embed([query])[0]
         # cosine similarity (vectors are already L2-normalized)
         sims = self.vectors @ q_vec

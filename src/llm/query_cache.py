@@ -116,55 +116,67 @@ def get_query_cache() -> TTLCache:
 # Convenience functions
 # ──────────────────────────────────────────────────────────────────────
 
-def cache_sql_result(sql: str, result: Any, ttl: int = 300) -> Any:
-    """Cache a SQL query result."""
+def cache_sql_result(sql: str, result: Any, ttl: int = 300, workspace_id: str = "default") -> Any:
+    """Cache a SQL query result (workspace-scoped)."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return result
     cache = get_query_cache()
-    cache.set("sql", result, ttl, sql)
+    cache.set("sql", result, ttl, sql, workspace_id)
     return result
 
 
-def get_cached_sql(sql: str) -> Optional[Any]:
+def get_cached_sql(sql: str, workspace_id: str = "default") -> Optional[Any]:
     """Get a cached SQL result."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return None
     cache = get_query_cache()
-    return cache.get("sql", sql)
+    return cache.get("sql", sql, workspace_id)
 
 
-def cache_rag_result(query: str, result: Any, ttl: int = 600) -> Any:
+def cache_rag_result(query: str, result: Any, ttl: int = 600, workspace_id: str = "default") -> Any:
     """Cache a RAG search result (longer TTL since docs change rarely)."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return result
     cache = get_query_cache()
-    cache.set("rag", result, ttl, query)
+    cache.set("rag", result, ttl, query, workspace_id)
     return result
 
 
-def get_cached_rag(query: str) -> Optional[Any]:
+def get_cached_rag(query: str, workspace_id: str = "default") -> Optional[Any]:
     """Get a cached RAG result."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return None
     cache = get_query_cache()
-    return cache.get("rag", query)
+    return cache.get("rag", query, workspace_id)
 
 
-def cache_full_response(question: str, response: Any, ttl: int = 300) -> Any:
-    """Cache a full orchestrator response."""
+def cache_full_response(question: str, response: Any, ttl: int = 300,
+                        workspace_id: str = "default") -> Any:
+    """Cache a full orchestrator response (workspace-scoped)."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return response
     cache = get_query_cache()
-    # Normalize question for caching
-    normalized = question.strip().lower()
+    # Normalize question for caching; never share entries across workspaces
+    normalized = f"{workspace_id}|{question.strip().lower()}"
     cache.set("response", response, ttl, normalized)
     return response
 
 
-def get_cached_response(question: str) -> Optional[Any]:
-    """Get a cached orchestrator response."""
+def get_cached_response(question: str, workspace_id: str = "default") -> Optional[Any]:
+    """Get a cached orchestrator response (workspace-scoped)."""
     if not getattr(config, "ENABLE_QUERY_CACHE", True):
         return None
     cache = get_query_cache()
-    normalized = question.strip().lower()
+    normalized = f"{workspace_id}|{question.strip().lower()}"
     return cache.get("response", normalized)
+
+
+def clear_all_caches():
+    """Clear the in-process query/response cache entirely.
+
+    Called when datasets or knowledge documents change so stale answers are
+    never served (a cache hit must equal a fresh cold execution).
+    """
+    cache = get_query_cache()
+    cache.clear()
+    logger.info("In-process query cache cleared (dataset/document change)")

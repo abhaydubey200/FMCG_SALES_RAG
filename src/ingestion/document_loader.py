@@ -129,6 +129,45 @@ def load_and_chunk_document(path: Path, document_type: str = "policy") -> List[C
     return chunks
 
 
+def _doc_workspace_map() -> dict:
+    """Map document_id → workspace_id from the documents registry.
+
+    Docs are tagged with their owning workspace when uploaded; seed docs that
+    predate tagging (or have no registry row) belong to the default workspace.
+    A DB failure must never fail ingestion — unknown docs default to "default".
+    """
+    mapping = {}
+    try:
+        if not config.USE_POSTGRESQL or not config.DATABASE_URL:
+            return mapping
+        import psycopg2
+        conn = psycopg2.connect(config.DATABASE_URL, connect_timeout=5)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT document_id, workspace_id FROM documents")
+            for doc_id, ws in cur.fetchall():
+                mapping[str(doc_id)] = str(ws or "default")
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return mapping
+
+
+def _chunk_workspace_id(chunk: Chunk) -> str:
+    """Return the workspace owning a chunk (metadata tag, else default)."""
+    ws = (chunk.metadata or {}).get("workspace_id")
+    return str(ws) if ws else "default"
+
+
+def _tag_chunks_with_workspace(chunks: List[Chunk]) -> List[Chunk]:
+    """Attach workspace_id to each chunk's metadata (isolation boundary)."""
+    doc_map = _doc_workspace_map()
+    for c in chunks:
+        c.metadata["workspace_id"] = doc_map.get(c.document_id, "default")
+    return chunks
+
+
 def load_knowledge_base(kb_dir: Path = None) -> List[Chunk]:
     kb_dir = kb_dir or config.KB_DIR
     all_chunks: List[Chunk] = []
@@ -136,7 +175,7 @@ def load_knowledge_base(kb_dir: Path = None) -> List[Chunk]:
     for ext in ("*.md", "*.txt", "*.pdf"):
         for path in sorted(Path(kb_dir).glob(ext)):
             all_chunks.extend(load_and_chunk_document(path))
-    return all_chunks
+    return _tag_chunks_with_workspace(all_chunks)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,8 @@ class GroqLLM(BaseLLM):
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    def generate(self, prompt: str, system: str = None, max_tokens: int = 2048) -> LLMResponse:
+    def generate(self, prompt: str, system: str = None, max_tokens: int = 2048,
+                 timeout: float = None) -> LLMResponse:
         start = time.time()
         payload = {
             "model": self.model,
@@ -49,9 +50,10 @@ class GroqLLM(BaseLLM):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        timeout = getattr(config, "LLM_TIMEOUT_SECONDS", 30)
-        # Groq is fast — use shorter timeout
-        timeout = min(timeout, 30)
+        # Groq is fast — short bounded timeout
+        if timeout is None:
+            timeout = min(getattr(config, "LLM_TIMEOUT_SECONDS", 30), 30)
+        timeout = min(float(timeout), 30)
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             json=payload, headers=headers,
@@ -62,10 +64,12 @@ class GroqLLM(BaseLLM):
         latency_ms = (time.time() - start) * 1000
         text = data["choices"][0]["message"]["content"].strip()
         model_used = data.get("model", self.model)
+        usage = data.get("usage")
         return LLMResponse(text=text, model_name=model_used,
-                            backend="groq", latency_ms=latency_ms)
+                            backend="groq", latency_ms=latency_ms, usage=usage)
 
-    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 2048) -> Iterator[str]:
+    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 2048,
+                        timeout: float = None) -> Iterator[str]:
         """Stream response tokens from Groq using SSE."""
         payload = {
             "model": self.model,
@@ -79,7 +83,9 @@ class GroqLLM(BaseLLM):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        timeout = min(getattr(config, "LLM_TIMEOUT_SECONDS", 30), 30)
+        if timeout is None:
+            timeout = min(getattr(config, "LLM_TIMEOUT_SECONDS", 30), 30)
+        timeout = min(float(timeout), 30)
         try:
             resp = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -106,5 +112,5 @@ class GroqLLM(BaseLLM):
                         continue
         except Exception:
             # Fall back to non-streaming on error
-            response = self.generate(prompt, system, max_tokens)
+            response = self.generate(prompt, system, max_tokens, timeout=timeout)
             yield response.text

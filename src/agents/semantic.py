@@ -241,18 +241,19 @@ class SemanticResolver:
         return resolved
 
     def _match_metrics(self, text: str) -> List[MetricDefinition]:
-        """Find metrics mentioned in the query."""
+        """Find metrics mentioned in the query (word-boundary matching).
+
+        Word boundaries prevent substring false positives, e.g. 'marketing'
+        must NOT match the dimension alias 'market', and 'salesperson' must
+        not match 'sales'.
+        """
         all_metrics = {**self._metrics, **self._dynamic_metrics}
         matched = []
         seen = set()
         
         for metric_def in all_metrics.values():
             for alias in metric_def.aliases:
-                # Use word boundary matching for short aliases
-                if len(alias) <= 3:
-                    pattern = r"\b" + re.escape(alias) + r"\b"
-                else:
-                    pattern = re.escape(alias)
+                pattern = r"\b" + re.escape(alias) + r"\b"
                 
                 if re.search(pattern, text, re.IGNORECASE):
                     if metric_def.name not in seen:
@@ -278,15 +279,12 @@ class SemanticResolver:
                         seen.add(dim_def.name)
                     break
         
-        # Also check for dimension names without "by"
+        # Also check for dimension names without "by" (word-boundary matching)
         for dim_def in all_dims.values():
             if dim_def.name in seen:
                 continue
             for alias in dim_def.aliases:
-                if len(alias) <= 3:
-                    pattern = r"\b" + re.escape(alias) + r"\b"
-                else:
-                    pattern = re.escape(alias)
+                pattern = r"\b" + re.escape(alias) + r"\b"
                 if re.search(pattern, text, re.IGNORECASE):
                     matched.append(dim_def)
                     seen.add(dim_def.name)

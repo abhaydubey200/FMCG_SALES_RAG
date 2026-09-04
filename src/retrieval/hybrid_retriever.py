@@ -55,11 +55,16 @@ class HybridRetriever:
         self.vector_store = vector_store
         self.keyword_index = keyword_index
 
-    def retrieve(self, query: str, top_k: int = None, filters: dict = None) -> List[RetrievedChunk]:
+    def retrieve(self, query: str, top_k: int = None, filters: dict = None,
+                 workspace_id: str = None) -> List[RetrievedChunk]:
+        """Retrieve chunks. workspace_id restricts both index searches to the
+        owning workspace, so cross-workspace chunks can never enter the pool."""
         top_k = top_k or config.TOP_K_FINAL
 
-        vector_hits = self.vector_store.search(query, top_k=config.TOP_K_VECTOR)
-        keyword_hits = self.keyword_index.search(query, top_k=config.TOP_K_KEYWORD)
+        vector_hits = self.vector_store.search(query, top_k=config.TOP_K_VECTOR,
+                                               workspace_id=workspace_id)
+        keyword_hits = self.keyword_index.search(query, top_k=config.TOP_K_KEYWORD,
+                                                 workspace_id=workspace_id)
 
         vec_scores = {vh.chunk.chunk_id: vh.score for vh in vector_hits}
         kw_scores = {kh.chunk.chunk_id: kh.score for kh in keyword_hits}

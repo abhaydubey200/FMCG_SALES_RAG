@@ -78,23 +78,26 @@ def register_tools(registry):
         except Exception as e:
             return {"error": str(e)}
 
-    def list_workspace_assets() -> Dict[str, Any]:
+    def list_workspace_assets(workspace_id: str = "default") -> Dict[str, Any]:
         """List all assets in the current workspace."""
         try:
             from src.analytics.dynamic_engine import list_datasets
             from src.rag.pipeline import get_pipeline
+            from src.ingestion.document_loader import _chunk_workspace_id
             assets = {"structured": [], "unstructured": []}
             # Structured
             try:
-                ds_list = list_datasets()
+                ds_list = list_datasets(workspace_id)
                 assets["structured"] = ds_list
             except Exception:
                 pass
-            # Unstructured
+            # Unstructured — only chunks owned by this workspace
             try:
                 pipeline = get_pipeline()
                 docs = {}
                 for c in pipeline.vector_store.chunks:
+                    if _chunk_workspace_id(c) != workspace_id:
+                        continue
                     if c.document_id not in docs:
                         docs[c.document_id] = {
                             "document_id": c.document_id,
@@ -109,14 +112,30 @@ def register_tools(registry):
         except Exception as e:
             return {"error": str(e), "structured": [], "unstructured": []}
 
-    def get_discoverable_data() -> Dict[str, Any]:
+    def get_discoverable_data(workspace_id: str = "default") -> Dict[str, Any]:
         """Discover available measures, dimensions, and entities from workspace data."""
         try:
             from src.analytics.dynamic_engine import discover_available_data
-            return discover_available_data()
+            return discover_available_data(workspace_id)
         except Exception as e:
             return {"error": str(e), "available_measures": {}, "available_dimensions": {}}
 
+    def dimension_values(dimension: str = "", workspace_id: str = "default") -> Dict[str, Any]:
+        """List the actual distinct values for a dimension in workspace data."""
+        try:
+            from src.analytics.dynamic_engine import workspace_dimension_values
+            if not dimension:
+                return {"dimension": dimension, "values": []}
+            return {"dimension": dimension, "values": workspace_dimension_values(dimension, workspace_id)}
+        except Exception as e:
+            return {"dimension": dimension, "values": [], "error": str(e)}
+
+    registry.register(ToolDef(
+        tool_id="dimension_values", name="Dimension Value Discovery",
+        description="List actual distinct values of a dimension (e.g. real region names) from workspace data",
+        category="data", fn=dimension_values,
+        input_schema={"dimension": "dimension concept name"}, output_schema="values: list of distinct values",
+    ))
     registry.register(ToolDef(
         tool_id="inspect_schema", name="Schema Inspector",
         description="Inspect column names and types of a workspace table",

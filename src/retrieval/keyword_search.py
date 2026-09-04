@@ -41,10 +41,23 @@ class KeywordIndex:
         tokenized = [_tokenize(c.text) for c in chunks]
         self.bm25 = BM25Okapi(tokenized)
 
-    def search(self, query: str, top_k: int = None) -> List[ScoredChunk]:
+    def search(self, query: str, top_k: int = None,
+               workspace_id: str = None) -> List[ScoredChunk]:
+        """Search chunks. When workspace_id is given, only chunks owned by that
+        workspace are eligible — cross-workspace retrieval is impossible."""
         top_k = top_k or config.TOP_K_KEYWORD
         if self.bm25 is None:
             return []
+        if workspace_id is not None:
+            from src.ingestion.document_loader import _chunk_workspace_id
+            idx = [i for i, c in enumerate(self.chunks)
+                   if _chunk_workspace_id(c) == workspace_id]
+            if not idx:
+                return []
+            sub_scores = self.bm25.get_scores(_tokenize(query))[idx]
+            ranked = sorted(range(len(idx)), key=lambda i: -sub_scores[i])[:top_k]
+            return [ScoredChunk(chunk=self.chunks[idx[i]], score=float(sub_scores[i]))
+                    for i in ranked if sub_scores[i] > 0]
         scores = self.bm25.get_scores(_tokenize(query))
         ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
         return [ScoredChunk(chunk=self.chunks[i], score=float(scores[i])) for i in ranked if scores[i] > 0]

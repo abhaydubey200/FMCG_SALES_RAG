@@ -31,7 +31,8 @@ class NVIDIALLM(BaseLLM):
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    def generate(self, prompt: str, system: str = None, max_tokens: int = 2048) -> LLMResponse:
+    def generate(self, prompt: str, system: str = None, max_tokens: int = 2048,
+                 timeout: float = None) -> LLMResponse:
         start = time.time()
         payload = {
             "model": self.model,
@@ -40,24 +41,37 @@ class NVIDIALLM(BaseLLM):
             "temperature": 0.1,
             "top_p": 0.9,
         }
+        # Nemotron reasoning models emit a verbose "thinking process" scaffold by
+        # default: it leaks into content, burns the token budget before the real
+        # answer, and adds ~10-25s of latency. reasoning_effort=none disables it
+        # (measured: 8-24s + leaked scaffold -> ~0.6s clean answer). Overridable
+        # via NVIDIA_REASONING_EFFORT for callers that genuinely want reasoning.
+        effort = getattr(config, "NVIDIA_REASONING_EFFORT", "none")
+        if effort:
+            payload["reasoning_effort"] = effort
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if timeout is None:
+            timeout = config.LLM_TIMEOUT_SECONDS
+        timeout = min(float(timeout), 120)
         resp = requests.post(
             f"{self.base_url}/chat/completions",
             json=payload, headers=headers,
-            timeout=config.LLM_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
         latency_ms = (time.time() - start) * 1000
         text = data["choices"][0]["message"]["content"].strip()
         model_used = data.get("model", self.model)
+        usage = data.get("usage")
         return LLMResponse(text=text, model_name=model_used,
-                            backend="nvidia", latency_ms=latency_ms)
+                            backend="nvidia", latency_ms=latency_ms, usage=usage)
 
-    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 2048) -> Iterator[str]:
+    def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 2048,
+                        timeout: float = None) -> Iterator[str]:
         """Stream response tokens from NVIDIA API using SSE."""
         payload = {
             "model": self.model,
@@ -71,11 +85,14 @@ class NVIDIALLM(BaseLLM):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if timeout is None:
+            timeout = config.LLM_TIMEOUT_SECONDS
+        timeout = min(float(timeout), 120)
         try:
             resp = requests.post(
                 f"{self.base_url}/chat/completions",
                 json=payload, headers=headers,
-                timeout=config.LLM_TIMEOUT_SECONDS,
+                timeout=timeout,
                 stream=True,
             )
             resp.raise_for_status()
@@ -97,5 +114,5 @@ class NVIDIALLM(BaseLLM):
                         continue
         except Exception:
             # Fall back to non-streaming on error
-            response = self.generate(prompt, system, max_tokens)
+            response = self.generate(prompt, system, max_tokens, timeout=timeout)
             yield response.text

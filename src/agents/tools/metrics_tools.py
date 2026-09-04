@@ -102,6 +102,105 @@ def register_tools(registry):
             "error": exec_result.get("error"),
         }
 
+    def workspace_metric(
+        metric: str = "revenue",
+        dimension: str = "",
+        op: str = "auto",
+        limit: int = 50,
+        workspace_id: str = "default",
+        exclude_value: str = "",
+        include_value: str = "",
+    ) -> Dict[str, Any]:
+        """Aggregate a canonical measure across ALL workspace tables (deterministic).
+
+        op: "total" (single aggregate) | "by_dimension" | "trend" | "excluding" | "only" | "auto"
+        "excluding" aggregates the rows that are NOT `exclude_value` within
+        `dimension` (e.g. revenue excluding North → South + West); "only"
+        aggregates the rows that ARE `include_value` (e.g. North + West). Both
+        return a single labeled total and never compute from subtraction labels.
+        "auto" chooses: by_dimension when a dimension is given, trend when the
+        dimension is a time grain (month/quarter/year/date), otherwise total.
+        Uses the dynamic engine's workspace-wide aggregation so multi-dataset
+        workspaces are summed/weighted correctly (never a single table).
+        """
+        try:
+            from src.analytics.dynamic_engine import (
+                workspace_metric_total, workspace_metric_by_dimension, workspace_metric_trend,
+            )
+            time_grain = dimension in ("month", "quarter", "year", "date")
+            if op == "auto":
+                if dimension and time_grain:
+                    op = "trend"
+                elif dimension:
+                    op = "by_dimension"
+                else:
+                    op = "total"
+
+            if op in ("excluding", "only"):
+                raw_value = exclude_value if op == "excluding" else include_value
+                if not dimension or not raw_value:
+                    return {"metric": metric, "op": op,
+                            "error": (f"{op} requires a dimension and a "
+                                      f"{'value to exclude' if op == 'excluding' else 'value to keep'}"),
+                            "data": [], "available": False}
+                rows = workspace_metric_by_dimension(metric, dimension, workspace_id)
+                if not rows:
+                    return {"metric": metric, "dimension": dimension, "op": op,
+                            "error": f"No data to compute '{metric} {op} {raw_value}' from",
+                            "data": [], "available": False}
+                sel = {v.strip().lower() for v in raw_value.lower().split(" and ")}
+                is_rate = (metric in ("discount", "margin", "price", "rating", "roas",
+                                      "discount_pct", "margin_pct", "discount_rate", "avg_rating")
+                           or any(k in metric for k in ("discount", "margin", "rating", "roas", "price")))
+                if is_rate:
+                    return {"metric": metric, "dimension": dimension, "op": op,
+                            "error": (f"'{metric}' is a rate/percentage measure — {op} is only "
+                                      "supported for additive measures (summed across rows)."),
+                            "data": [], "available": False}
+                if op == "excluding":
+                    selected = [r for r in rows
+                                if str(r.get("dimension", "")).lower() not in sel]
+                    join_word = "excluding"
+                else:
+                    selected = [r for r in rows
+                                if str(r.get("dimension", "")).lower() in sel]
+                    join_word = "in"
+                value = round(sum(float(r.get(metric, 0) or 0) for r in selected), 2)
+                names = [str(r.get("dimension")) for r in selected]
+                suffix = f" ({' + '.join(names)})" if names else ""
+                label = f"{metric.capitalize()} {join_word} {raw_value}{suffix}"
+                return {"metric": metric, "dimension": dimension, "op": "total",
+                        "value": value, "available": True,
+                        "exclude_value": exclude_value, "include_value": include_value,
+                        "included": names, "label": label,
+                        "data": selected, "row_count": 1, "format": "currency" if metric in ("revenue", "spend", "profit", "cost") else "number",
+                        "sql": f"workspace aggregate {metric} GROUP BY {dimension} {join_word} {raw_value}"}
+
+            if op == "total":
+                value = workspace_metric_total(metric, workspace_id)
+                if value is None:
+                    return {"metric": metric, "error": f"Metric '{metric}' not found in workspace data", "available": False, "data": []}
+                return {"metric": metric, "op": "total", "value": value, "available": True,
+                        "data": [{metric: value}], "format": "currency" if metric in ("revenue", "spend", "profit", "cost") else "number",
+                        "row_count": 1, "sql": f"workspace aggregate SUM/AVG({metric})"}
+            if op == "by_dimension":
+                rows = workspace_metric_by_dimension(metric, dimension, workspace_id, limit=limit)
+                if not rows:
+                    return {"metric": metric, "dimension": dimension, "error": "No matching data", "data": [], "available": False}
+                return {"metric": metric, "dimension": dimension, "op": "by_dimension",
+                        "data": rows, "row_count": len(rows), "available": True,
+                        "sql": f"workspace aggregate {metric} GROUP BY {dimension}"}
+            if op == "trend":
+                rows = workspace_metric_trend(metric, workspace_id)
+                if not rows:
+                    return {"metric": metric, "op": "trend", "error": "No time-series data", "data": [], "available": False}
+                return {"metric": metric, "op": "trend", "data": rows, "row_count": len(rows),
+                        "available": True, "sql": f"workspace aggregate {metric} by month"}
+            return {"metric": metric, "error": f"Unknown op {op}", "data": []}
+        except Exception as e:
+            logger.error("workspace_metric failed: %s", e)
+            return {"metric": metric, "error": str(e), "data": [], "available": False}
+
     def get_available_kpis() -> Dict[str, Any]:
         """Get KPIs that can be calculated from current workspace data."""
         try:
@@ -189,6 +288,13 @@ def register_tools(registry):
         category="analytics", fn=resolve_metric,
         input_schema={"concept": "business concept name", "table": "optional table hint"},
         output_schema="resolved, physical_column, table",
+    ))
+    registry.register(ToolDef(
+        tool_id="workspace_metric", name="Workspace Metric Aggregator",
+        description="Aggregate a canonical measure across ALL workspace tables (totals, by-dimension, trend)",
+        category="analytics", fn=workspace_metric,
+        input_schema={"metric": "canonical concept", "dimension": "dimension concept", "op": "total/by_dimension/trend/auto"},
+        output_schema="value or data rows with metric values",
     ))
     registry.register(ToolDef(
         tool_id="calculate_metric", name="Metric Calculator",

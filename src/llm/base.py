@@ -4,8 +4,8 @@ and optionally `generate_stream(prompt, system=None) -> Iterator[str]`
 so the RAG pipeline never needs to know which backend is active.
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Iterator
+from dataclasses import dataclass, field
+from typing import Iterator, Optional
 
 
 @dataclass
@@ -14,11 +14,13 @@ class LLMResponse:
     model_name: str
     backend: str
     latency_ms: float
+    usage: Optional[dict] = None
 
 
 class BaseLLM(ABC):
     @abstractmethod
-    def generate(self, prompt: str, system: str = None, max_tokens: int = 700) -> LLMResponse:
+    def generate(self, prompt: str, system: str = None, max_tokens: int = 700,
+                 timeout: Optional[float] = None) -> LLMResponse:
         ...
 
     def generate_stream(self, prompt: str, system: str = None, max_tokens: int = 700) -> Iterator[str]:

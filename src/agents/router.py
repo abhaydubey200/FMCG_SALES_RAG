@@ -38,6 +38,7 @@ class RouteResult:
     metrics: List[str] = field(default_factory=list)
     dimensions: List[str] = field(default_factory=list)
     needs_llm: bool = False  # True only for COMPLEX/AMBIGUOUS
+    causal: bool = False  # True when the query asks WHY/what caused (causal analysis)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -58,7 +59,7 @@ _KNOWLEDGE_PATTERNS = [
     (r"\bprocedure(s)?\b", "procedures"),
     (r"\bframework\b", "framework"),
     (r"\bcode of conduct\b", "code of conduct"),
-    (r"\btrade promotion\b", "trade promotion"),
+    (r"\btrade promotion(s)?\b", "trade promotion"),
     (r"\bcategory role\b", "category role"),
     (r"\bdiscount limit\b", "discount limit"),
     (r"\brecyclability\b", "recyclability"),
@@ -104,15 +105,34 @@ _ANALYTICS_PATTERNS = [
     (r"\bwhat is (the )?total\b", "total question"),
 ]
 
-# Investigation patterns (root cause / diagnostic)
+# Investigation patterns (root cause / diagnostic).
+# Causal phrasing must WIN over analytics patterns: a question like
+# "What caused the revenue decline in the West market?" contains revenue +
+# decline (analytics terms) AND causal terms. Causal terms are the stronger
+# intent signal — the query is about WHY, not about the number itself.
+# Each match adds 1.6 to COMPLEX (analytics terms add 1.0 each), so a single
+# causal phrase outranks a two-term analytics phrase.
 _INVESTIGATION_PATTERNS = [
-    (r"\bwhy (did|does|is|was|were)\b", "causal question"),
+    (r"\bwhy (did|does|is|was|were|has|have)\b", "causal question"),
+    (r"\bwhy is .+ (declining|decreasing|dropping|falling|increasing|rising|growing)\b", "change investigation"),
     (r"\bwhat caused\b", "causal question"),
+    (r"\bcaused\b", "causal question"),
+    (r"\bcause of\b", "causal question"),
+    (r"\bcauses?\b", "causal question"),
+    (r"\bcaused by\b", "causal question"),
+    (r"\bwhat (drove|drives)\b", "causal question"),
+    (r"\bwhat is driving\b", "causal question"),
+    (r"\bwhat['’]s driving\b", "causal question"),
+    (r"\bdriver[s]? of\b", "causal question"),
     (r"\broot cause\b", "root cause"),
-    (r"\binvestigate\b", "investigation"),
-    (r"\bexplain(ation)?\b", "explanation"),
     (r"\breason for\b", "reason question"),
-    (r"\bwhy is .+ (declining|decreasing|dropping|falling)\b", "decline investigation"),
+    (r"\breason behind\b", "reason question"),
+    (r"\bwhat explains\b", "causal question"),
+    (r"\bwhich factors\b", "causal question"),
+    (r"\bexplain the (decline|decrease|drop|fall|increase|rise|growth|change)\b", "change explanation"),
+    (r"\bexplain(ation)?\b", "explanation"),
+    (r"\binvestigate\b", "investigation"),
+    (r"\bwhy (is|are) .+ (performing|doing) (better|worse)\b", "comparison investigation"),
 ]
 
 # Ambiguous patterns
@@ -127,6 +147,7 @@ _AMBIGUOUS_PATTERNS = [
 # Unsupported patterns
 _UNSUPPORTED_PATTERNS = [
     (r"\b(predict|forecast|will be in 20\d\d)\b", "prediction"),
+    (r"\b(?:will|going to|be).{0,30}?(?:in|by)\s+20(?:2[5-9]|3\d)\b", "future projection"),
     (r"\bopinion\b", "opinion"),
     (r"\brecommend(ation)?\b", "recommendation"),
     (r"\bshould we\b", "advisory"),
@@ -175,7 +196,7 @@ def _extract_metrics(text: str) -> List[str]:
     }
     text_lower = text.lower()
     for metric_name, aliases in metric_map.items():
-        if any(alias in text_lower for alias in aliases):
+        if any(re.search(rf"\b{re.escape(alias)}\b", text_lower) for alias in aliases):
             metrics.append(metric_name)
     return metrics
 
@@ -232,18 +253,30 @@ class FastRouter:
         unsupported_matches = _match_patterns(text, _UNSUPPORTED_PATTERNS)
 
         # ── Phase 2: Score each route ──
+        # COMPLEX weight 2.0: a single causal phrase beats a 2-term analytics
+        # phrase ("revenue" + "decline" = 2.0), so causal intent never loses
+        # to ordinary retrieval on a tie. Route selection below also prefers
+        # COMPLEX on exact ties when investigation terms are present.
         scores = {
             "ANALYTICS": len(analytics_matches) * 1.0,
             "KNOWLEDGE": len(knowledge_matches) * 1.5,  # Knowledge terms are strong signals
             "HYBRID": 0.0,
-            "COMPLEX": len(investigation_matches) * 1.2,
+            "COMPLEX": len(investigation_matches) * 2.0,
             "AMBIGUOUS": len(ambiguous_matches) * 2.0,  # Strong signal for ambiguity
             "UNSUPPORTED": len(unsupported_matches) * 2.0,  # Strong signal for unsupported
         }
 
-        # Hybrid: both knowledge AND analytics terms present
+        # Hybrid: knowledge terms AND a STRONG analytical intent (data + documents needed)
+        # Soft words like 'discount'/'limit' alone do not trigger hybrid — a policy
+        # question about discount limits must stay KNOWLEDGE.
         if knowledge_matches and analytics_matches:
-            scores["HYBRID"] = min(len(knowledge_matches), len(analytics_matches)) * 1.5
+            _strong_analytics = {"revenue", "sales", "units", "quantity", "margin",
+                                 "profit", "spend", "total", "trend", "comparison",
+                                 "breakdown", "growth", "dimensional", "ranking",
+                                 "average", "sum", "maximum", "minimum", "count",
+                                 "quantitative", "show", "decline"}
+            if any(l in _strong_analytics for l in analytics_matches):
+                scores["HYBRID"] = (len(knowledge_matches) + len(analytics_matches)) * 1.3
 
         # ── Phase 3: Entity/metric/dimension extraction ──
         entities = _extract_entities(query)
@@ -254,12 +287,23 @@ class FastRouter:
         route = max(scores, key=scores.get)
         max_score = scores[route]
 
+        # Causal tie-break: when investigation terms are present and COMPLEX
+        # ties (or beats) the winner, causal analysis wins — a "why" question
+        # must never degrade into plain number retrieval.
+        if investigation_matches and scores["COMPLEX"] >= max_score:
+            route = "COMPLEX"
+            max_score = scores["COMPLEX"]
+
+        # Causal flag: any causal/investigation phrasing → the query asks WHY.
+        causal = bool(investigation_matches)
+
         # Handle ties and low confidence
         if max_score == 0:
-            # No strong signals — default to ANALYTICS with low confidence
-            route = "ANALYTICS"
+            # No strong signals — never invent an analytics answer for text we
+            # can't classify (greetings, injection attempts, random phrases).
+            route = "AMBIGUOUS"
             max_score = 0.1
-            reasoning = "No strong signals — defaulting to analytics"
+            reasoning = "No clear analytics, knowledge, or investigation signal — ambiguous"
         elif route == "AMBIGUOUS" and max_score >= 2.0:
             reasoning = f"Ambiguous patterns matched: {', '.join(ambiguous_matches)}"
         elif route == "UNSUPPORTED" and max_score >= 2.0:
@@ -275,8 +319,10 @@ class FastRouter:
 
         confidence = min(1.0, max_score / 3.0)
 
-        # ── Phase 5: Determine if LLM is needed ──
-        needs_llm = route in ("COMPLEX", "AMBIGUOUS", "UNSUPPORTED")
+        # ── Phase 5: Determine if LLM synthesis is potentially needed ──
+        # Only genuinely complex investigations may consume ONE synthesis call.
+        # AMBIGUOUS/UNSUPPORTED queries are answered deterministically (refusals).
+        needs_llm = route == "COMPLEX"
 
         elapsed_ms = round((__import__("time").time() - t0) * 1000, 2)
         logger.info(
@@ -292,6 +338,7 @@ class FastRouter:
             metrics=metrics,
             dimensions=dimensions,
             needs_llm=needs_llm,
+            causal=causal,
         )
 
 

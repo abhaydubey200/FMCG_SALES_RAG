@@ -20,7 +20,7 @@ from pathlib import Path
 
 import json
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -60,6 +60,29 @@ def _fetchone(conn, query, params=None):
     except Exception:
         cols = [desc[0] for desc in cur.description]
         return dict(zip(cols, row))
+
+
+def _query_error_body(e, default_code="INTERNAL_ERROR", default_retryable=False):
+    """Standardized API error payload: {"error": {code, message, retryable}}."""
+    msg = str(e) or e.__class__.__name__
+    ml = msg.lower()
+    code = default_code
+    retryable = default_retryable
+    if any(k in ml for k in ("timed out", "timeout", "connection aborted", "read timed out", "requests.exceptions")):
+        code, retryable = "LLM_TIMEOUT", True
+    elif any(k in ml for k in ("database", "postgres", "connection refused", "psycopg2", "redis")):
+        code, retryable = "DATABASE_ERROR", True
+    elif "no attribute" in ml or "traceback" in ml:
+        code = "INTERNAL_ERROR"
+    return {"error": {"code": code, "message": msg[:300], "retryable": retryable},
+            "detail": msg[:300]}
+
+
+def _raise_query_error(e):
+    """Raise HTTPException with the standardized error contract."""
+    body = _query_error_body(e)
+    status = 503 if body["error"]["retryable"] else 500
+    raise HTTPException(status_code=status, detail=body)
 
 
 def _to_dict(row, cursor=None):
@@ -304,18 +327,22 @@ def query(req: QueryRequest):
         raise HTTPException(status_code=422, detail="question must not be empty")
     try:
         orch = _get_orchestrator()
+        workspace_id = req.workspace_id or "default"
         conv_context = []
         conv_id = req.conversation_id
         if conv_id:
             try:
                 with sql_layer.get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                    cur.execute("""SELECT m.role, m.content FROM conversation_messages m
+                                   JOIN conversations c ON c.id = m.conversation_id
+                                   WHERE m.conversation_id = %s AND c.workspace_id = %s ORDER BY m.id""",
+                                (conv_id, workspace_id))
                     conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
             except Exception:
                 pass
         result = orch.process(req.question, conversation_context=conv_context,
-                              conversation_id=conv_id, workspace_id="default")
+                              conversation_id=conv_id, workspace_id=workspace_id)
         # Adapt orchestrator response to QueryResponse format
         return QueryResponse(
             answer=result.get("answer", ""),
@@ -325,9 +352,11 @@ def query(req: QueryRequest):
             evidence=result.get("evidence", {}),
             visualization=result.get("visualization", {}),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Query failed")
-        raise HTTPException(status_code=500, detail=f"Failed to process query: {e}")
+        _raise_query_error(e)
 
 
 @app.post("/query/stream")
@@ -353,18 +382,28 @@ def query_stream(req: QueryRequest):
             yield f"event: start\ndata: {{}}\n\n"
 
             orch = _get_orchestrator()
+            workspace_id = req.workspace_id or "default"
             conv_context = []
             conv_id = req.conversation_id
+            conv_owned = False
             if conv_id:
                 try:
                     with sql_layer.get_conn() as conn:
                         cur = conn.cursor()
-                        cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                        # Conversation history is workspace-scoped: a conversation
+                        # owned by another workspace cannot leak into this request.
+                        cur.execute("SELECT 1 FROM conversations WHERE id = %s AND workspace_id = %s",
+                                    (conv_id, workspace_id))
+                        conv_owned = cur.fetchone() is not None
+                        cur.execute("""SELECT m.role, m.content FROM conversation_messages m
+                                       JOIN conversations c ON c.id = m.conversation_id
+                                       WHERE m.conversation_id = %s AND c.workspace_id = %s ORDER BY m.id""",
+                                    (conv_id, workspace_id))
                         conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
                 except Exception:
                     pass
             for event in orch.process_stream(req.question, conversation_context=conv_context,
-                                              conversation_id=conv_id, workspace_id="default"):
+                                              conversation_id=conv_id, workspace_id=workspace_id):
                 event_type = event.get("type", "token")
                 data = json.dumps({k: v for k, v in event.items() if k != "type"}, default=str)
                 yield f"event: {event_type}\ndata: {data}\n\n"
@@ -373,8 +412,8 @@ def query_stream(req: QueryRequest):
                 elif event_type == "done" and "answer" in event:
                     full_answer.clear()
                     full_answer.append(event["answer"])
-            # Persist conversation messages
-            if conv_id and full_answer:
+            # Persist conversation messages (only when the workspace owns the conversation)
+            if conv_owned and conv_id and full_answer:
                 try:
                     now = datetime.now().isoformat()
                     with sql_layer.get_conn() as conn:
@@ -389,8 +428,11 @@ def query_stream(req: QueryRequest):
                     logger.warning(f"Failed to persist streaming response: {e}")
         except Exception as e:
             logger.exception("Streaming query failed")
-            error_data = json.dumps({"error": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
+            body = _query_error_body(e)
+            err = body["error"]
+            err_payload = json.dumps({"error": "[%s] %s" % (err["code"], err["message"]),
+                                      "code": err["code"], "retryable": err["retryable"]})
+            yield "event: error\ndata: " + err_payload + "\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -430,20 +472,28 @@ def ai_query(req: QueryRequest):
         raise HTTPException(status_code=422, detail="question must not be empty")
     try:
         orch = _get_orchestrator()
+        workspace_id = req.workspace_id or "default"
         conv_context = []
         conv_id = req.conversation_id
+        conv_owned = False
         if conv_id:
             try:
                 with sql_layer.get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                    cur.execute("SELECT 1 FROM conversations WHERE id = %s AND workspace_id = %s",
+                                (conv_id, workspace_id))
+                    conv_owned = cur.fetchone() is not None
+                    cur.execute("""SELECT m.role, m.content FROM conversation_messages m
+                                   JOIN conversations c ON c.id = m.conversation_id
+                                   WHERE m.conversation_id = %s AND c.workspace_id = %s ORDER BY m.id""",
+                                (conv_id, workspace_id))
                     conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
             except Exception:
                 pass
         result = orch.process(req.question, conversation_context=conv_context,
-                              conversation_id=conv_id, workspace_id="default")
+                              conversation_id=conv_id, workspace_id=workspace_id)
         # Persist user message and assistant response to conversation
-        if conv_id:
+        if conv_owned and conv_id:
             try:
                 now = datetime.now().isoformat()
                 with sql_layer.get_conn() as conn:
@@ -459,9 +509,11 @@ def ai_query(req: QueryRequest):
             except Exception as e:
                 logger.warning(f"Failed to persist conversation messages: {e}")
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Agentic query failed")
-        raise HTTPException(status_code=500, detail=f"Failed to process query: {e}")
+        _raise_query_error(e)
 
 
 @app.post("/api/ai/query/stream")
@@ -477,17 +529,28 @@ def ai_query_stream(req: QueryRequest):
             yield f"event: start\ndata: {{}}\n\n"
 
             orch = _get_orchestrator()
+            workspace_id = req.workspace_id or "default"
             conv_context = []
             conv_id = req.conversation_id
+            conv_owned = False
             if conv_id:
                 try:
                     with sql_layer.get_conn() as conn:
                         cur = conn.cursor()
-                        cur.execute("SELECT role, content FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conv_id,))
+                        # Conversation history is workspace-scoped: a conversation
+                        # owned by another workspace cannot leak into this request.
+                        cur.execute("SELECT 1 FROM conversations WHERE id = %s AND workspace_id = %s",
+                                    (conv_id, workspace_id))
+                        conv_owned = cur.fetchone() is not None
+                        cur.execute("""SELECT m.role, m.content FROM conversation_messages m
+                                       JOIN conversations c ON c.id = m.conversation_id
+                                       WHERE m.conversation_id = %s AND c.workspace_id = %s ORDER BY m.id""",
+                                    (conv_id, workspace_id))
                         conv_context = [{"role": r[0], "content": r[1]} for r in cur.fetchall()[-6:]]
                 except Exception:
                     pass
-                # Persist user message
+            if conv_owned:
+                # Persist user message (only when the workspace owns the conversation)
                 try:
                     with sql_layer.get_conn() as conn:
                         cur = conn.cursor()
@@ -497,7 +560,7 @@ def ai_query_stream(req: QueryRequest):
                 except Exception as e:
                     logger.warning(f"Failed to persist user message: {e}")
             for event in orch.process_stream(req.question, conversation_context=conv_context,
-                                              conversation_id=conv_id, workspace_id="default"):
+                                              conversation_id=conv_id, workspace_id=workspace_id):
                 event_type = event.get("type", "token")
                 data = json.dumps({k: v for k, v in event.items() if k != "type"}, default=str)
                 yield f"event: {event_type}\ndata: {data}\n\n"
@@ -506,8 +569,8 @@ def ai_query_stream(req: QueryRequest):
                 elif event_type == "done" and "answer" in event:
                     full_answer.clear()
                     full_answer.append(event["answer"])
-            # Persist assistant response
-            if conv_id and full_answer:
+            # Persist assistant response (only when the workspace owns the conversation)
+            if conv_owned and conv_id and full_answer:
                 try:
                     now = datetime.now().isoformat()
                     with sql_layer.get_conn() as conn:
@@ -522,8 +585,11 @@ def ai_query_stream(req: QueryRequest):
                     logger.warning(f"Failed to persist assistant response: {e}")
         except Exception as e:
             logger.exception("Agentic streaming query failed")
-            error_data = json.dumps({"error": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
+            body = _query_error_body(e)
+            err = body["error"]
+            err_payload = json.dumps({"error": "[%s] %s" % (err["code"], err["message"]),
+                                      "code": err["code"], "retryable": err["retryable"]})
+            yield "event: error\ndata: " + err_payload + "\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -581,9 +647,12 @@ def list_tools():
 
 
 @app.get("/documents", response_model=list[DocumentInfo])
-def list_documents():
+def list_documents(workspace_id: str = "default"):
+    from src.ingestion.document_loader import _chunk_workspace_id
     docs = {}
     for c in _pipeline.vector_store.chunks:
+        if _chunk_workspace_id(c) != workspace_id:
+            continue
         if c.document_id not in docs:
             docs[c.document_id] = {
                 "document_id": c.document_id, "document_name": c.document_name,
@@ -644,7 +713,7 @@ def _convert_data_file_to_markdown(file_bytes: bytes, filename: str) -> str:
 
 
 @app.post("/documents/upload", response_model=UploadResponse)
-def upload_document(file: UploadFile = File(...)):
+def upload_document(file: UploadFile = File(...), workspace_id: str = Form("default")):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=422,
@@ -656,56 +725,104 @@ def upload_document(file: UploadFile = File(...)):
                             detail=f"Data file '{file.filename}' is too large for knowledge base ingestion ({len(file_bytes):,} bytes). "
                                    "Use the Data Hub upload instead for structured data files.")
 
+    # Workspace-prefixed storage: two workspaces may upload the same filename
+    # without colliding, and chunk metadata is tagged with the owning workspace.
+    stored_name = f"{workspace_id}__{file.filename}" if workspace_id != "default" else file.filename
     if ext == ".pdf":
-        dest = Path(config.KB_DIR) / file.filename
+        dest = Path(config.KB_DIR) / stored_name
         dest.write_bytes(file_bytes)
     elif ext != ".md":
         md_content = _convert_data_file_to_markdown(file_bytes, file.filename)
-        stem = Path(file.filename).stem
+        stem = Path(stored_name).stem
         dest = Path(config.KB_DIR) / f"{stem}.md"
         dest.write_text(md_content, encoding="utf-8")
     else:
-        dest = Path(config.KB_DIR) / file.filename
+        dest = Path(config.KB_DIR) / stored_name
         dest.write_bytes(file_bytes)
+
+    doc_id = dest.stem
+    try:
+        with sql_layer.get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO documents (document_id, document_name, document_type, file_path, chunk_count, workspace_id, status) "
+                "VALUES (%s, %s, %s, %s, 0, %s, 'ready') "
+                "ON CONFLICT (document_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, status = 'ready'",
+                (doc_id, dest.stem.replace("_", " ").title(), ext.lstrip("."), str(dest), workspace_id)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to register document in DB: {e}")
 
     try:
         _pipeline.reindex()
+        from src.llm.query_cache import clear_all_caches
+        clear_all_caches()
     except Exception as e:
         logger.exception("Upload/reindex failed")
         raise HTTPException(status_code=500, detail=f"Failed to reindex: {e}")
 
-    chunk_count = len([c for c in _pipeline.vector_store.chunks if c.document_id == dest.stem])
-    return UploadResponse(document_id=dest.stem, document_name=dest.stem.replace("_", " ").title(),
+    chunk_count = len([c for c in _pipeline.vector_store.chunks
+                       if c.document_id == doc_id and (c.metadata or {}).get("workspace_id", "default") == workspace_id])
+    return UploadResponse(document_id=doc_id, document_name=doc_id.replace("_", " ").title(),
                            chunks_created=chunk_count, message="Document ingested and indexed.")
 
 
 @app.delete("/documents/{document_id}", response_model=DeleteResponse)
-def delete_document(document_id: str):
+def delete_document(document_id: str, workspace_id: str = "default"):
     safe_id = "".join(ch for ch in document_id if ch.isalnum() or ch in "_-")
-    path = Path(config.KB_DIR) / f"{safe_id}.md"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
-    path.unlink()
+    # Only delete documents owned by the requesting workspace
+    try:
+        with sql_layer.get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT file_path FROM documents WHERE document_id = %s AND workspace_id = %s",
+                        (safe_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Document '{document_id}' not found.")
+        file_path = row[0]
+    except HTTPException:
+        raise
+    except Exception:
+        file_path = None
+    path = Path(file_path) if file_path else Path(config.KB_DIR) / f"{safe_id}.md"
+    if path.exists():
+        path.unlink()
+    try:
+        with sql_layer.get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT chunk_id FROM document_chunks WHERE document_id = %s", (safe_id,))
+            chunk_ids = [r[0] for r in cur.fetchall()]
+            if chunk_ids:
+                cur.execute("DELETE FROM embeddings WHERE chunk_id = ANY(%s)", (chunk_ids,))
+            cur.execute("DELETE FROM document_chunks WHERE document_id = %s", (safe_id,))
+            cur.execute("DELETE FROM documents WHERE document_id = %s", (safe_id,))
+            cur.execute("DELETE FROM assets WHERE asset_id = %s", (f"kb_{safe_id}",))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to clean up DB records for document {safe_id}: {e}")
     _pipeline.reindex()
     try:
         from src.database.state_manager import get_cache_manager
         get_cache_manager().invalidate_rag()
+        from src.llm.query_cache import clear_all_caches
+        clear_all_caches()
     except Exception:
         pass
     return DeleteResponse(document_id=document_id, deleted=True, message="Document removed and index rebuilt.")
 
 
 @app.get("/dashboard", response_model=DashboardResponse)
-def dashboard():
+def dashboard(workspace_id: str = "default"):
     """Dashboard — workspace data only. No legacy fallback."""
-    if has_workspace_data():
-        total_revenue = workspace_total_revenue() or 0
-        total_units = workspace_total_quantity() or 0
-        total_spend = workspace_total_spend() or 0
+    if has_workspace_data(workspace_id):
+        total_revenue = workspace_total_revenue(workspace_id) or 0
+        total_units = workspace_total_quantity(workspace_id) or 0
+        total_spend = workspace_total_spend(workspace_id) or 0
         return DashboardResponse(
             total_products=int(total_units), total_revenue=round(total_revenue, 2),
             total_marketing_spend=round(total_spend, 2), avg_roas=None,
-            top_category=None, total_customers=workspace_row_count(), total_reviews=0,
+            top_category=None, total_customers=workspace_row_count(workspace_id), total_reviews=0,
         )
     return DashboardResponse(
         total_products=0, total_revenue=0, total_marketing_spend=0,
@@ -719,9 +836,9 @@ def dashboard():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/analytics/overview", response_model=OverviewKPI)
-def analytics_overview():
+def analytics_overview(workspace_id: str = "default"):
     """Dynamic analytics overview — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return OverviewKPI(
             total_revenue=0, total_units_sold=0, gross_margin_pct=None,
             total_marketing_spend=0, avg_roas=None, total_customers=0,
@@ -730,14 +847,14 @@ def analytics_overview():
             roas_growth_pct=None, customer_growth_pct=None,
         )
     try:
-        total_revenue = workspace_total_revenue() or 0
-        total_units = workspace_total_quantity() or 0
-        total_spend = workspace_total_spend() or 0
-        total_customers = workspace_row_count()
+        total_revenue = workspace_total_revenue(workspace_id) or 0
+        total_units = workspace_total_quantity(workspace_id) or 0
+        total_spend = workspace_total_spend(workspace_id) or 0
+        total_customers = workspace_row_count(workspace_id)
         avg_roas = (total_revenue / total_spend) if total_spend else None
         gross_margin = None
         try:
-            data = discover_available_data()
+            data = discover_available_data(workspace_id)
             rev_entries = data["available_measures"].get("revenue", [])
             cost_entries = data["available_measures"].get("cost", [])
             if rev_entries and cost_entries:
@@ -754,6 +871,8 @@ def analytics_overview():
                         gross_profit = float(cur.fetchone()[0] or 0)
                     finally:
                         conn.close()
+                    # NOTE: revenue/cost columns come from the same workspace asset
+                    # table (discover_available_data is workspace-scoped).
                     if total_revenue > 0:
                         gross_margin = (gross_profit / total_revenue * 100)
         except Exception:
@@ -781,12 +900,12 @@ def analytics_overview():
 
 
 @app.get("/api/analytics/revenue-trend", response_model=list[MonthlyRevenueTrend])
-def revenue_trend():
+def revenue_trend(workspace_id: str = "default"):
     """Revenue trend — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return []
     try:
-        trend = workspace_revenue_trend()
+        trend = workspace_revenue_trend(workspace_id)
         return [MonthlyRevenueTrend(month=r["month"], revenue=round(float(r["revenue"]), 2),
                                      units_sold=0, profit=0) for r in trend]
     except Exception:
@@ -794,13 +913,13 @@ def revenue_trend():
 
 
 @app.get("/api/analytics/category-performance", response_model=list[CategoryPerformance])
-def category_perf():
+def category_perf(workspace_id: str = "default"):
     """Category performance — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return []
     try:
         for dim in ["category", "product"]:
-            rows = workspace_revenue_by_dimension(dim)
+            rows = workspace_revenue_by_dimension(dim, workspace_id)
             if rows:
                 return [CategoryPerformance(
                     category=str(r.get("dimension", "Unknown")),
@@ -815,12 +934,12 @@ def category_perf():
 
 
 @app.get("/api/campaigns", response_model=list[CampaignListItem])
-def list_campaigns():
+def list_campaigns(workspace_id: str = "default"):
     """Campaigns — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return []
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         # Find campaign-related data from semantic mappings
         conv_entries = data["available_measures"].get("conversions", [])
         spend_entries = data["available_measures"].get("spend", [])
@@ -893,12 +1012,12 @@ def get_campaign(campaign_id: str):
 
 
 @app.get("/api/products", response_model=list[ProductListItem])
-def list_products():
+def list_products(workspace_id: str = "default"):
     """Products — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return []
     try:
-        top = workspace_top_entities(limit=50)
+        top = workspace_top_entities(limit=50, workspace_id=workspace_id)
         return [ProductListItem(
             product_id=f"ws_{i}", product_name=str(r.get("name", "Unknown")),
             category="", subcategory="", price=0, cost=0, rating=None,
@@ -917,12 +1036,12 @@ def get_product_detail(product_id: str):
 
 
 @app.get("/api/customers/segments", response_model=list[CustomerSegment])
-def customer_segments():
+def customer_segments(workspace_id: str = "default"):
     """Customer segments — workspace data only."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return []
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         cust_dim = data["available_dimensions"].get("customer", []) or data["available_dimensions"].get("customer_name", [])
         if cust_dim:
             return []  # Dynamic customer segments from uploaded data
@@ -952,19 +1071,21 @@ def run_evaluation_endpoint():
 # ---------------------------------------------------------------------------
 
 @app.post("/api/datahub/upload")
-def datahub_upload(file: UploadFile = File(...)):
+def datahub_upload(file: UploadFile = File(...), workspace_id: str = Form("default")):
     ext = Path(file.filename).suffix.lower()
     STRUCTURED_EXTS = {".csv", ".xlsx", ".xls"}
     UNSTRUCTURED_EXTS = {".pdf", ".docx", ".doc", ".txt"}
 
     if ext in STRUCTURED_EXTS:
         try:
-            result = dynamic_ingest(file.file.read(), file.filename)
+            result = dynamic_ingest(file.file.read(), file.filename, workspace_id)
             if _pipeline:
                 _pipeline._cache.clear()
             try:
                 from src.database.state_manager import get_cache_manager
                 get_cache_manager().invalidate_workspace()
+                from src.llm.query_cache import clear_all_caches
+                clear_all_caches()
             except Exception:
                 pass
         except ValueError as e:
@@ -976,9 +1097,12 @@ def datahub_upload(file: UploadFile = File(...)):
 
     if ext in UNSTRUCTURED_EXTS:
         file_bytes = file.file.read()
-        stem = Path(file.filename).stem
+        # Workspace-prefixed storage so the same filename can exist in two
+        # workspaces without colliding; chunk metadata is tagged with the owner.
+        stored_name = f"{workspace_id}__{file.filename}" if workspace_id != "default" else file.filename
+        stem = Path(stored_name).stem
         if ext == ".pdf":
-            dest = Path(config.KB_DIR) / file.filename
+            dest = Path(config.KB_DIR) / stored_name
         elif ext != ".md":
             try:
                 if ext == ".txt":
@@ -995,10 +1119,10 @@ def datahub_upload(file: UploadFile = File(...)):
                 dest = Path(config.KB_DIR) / f"{stem}.md"
                 dest.write_text(md_content, encoding="utf-8")
             except Exception:
-                dest = Path(config.KB_DIR) / file.filename
+                dest = Path(config.KB_DIR) / stored_name
                 dest.write_bytes(file_bytes)
         else:
-            dest = Path(config.KB_DIR) / file.filename
+            dest = Path(config.KB_DIR) / stored_name
             dest.write_bytes(file_bytes)
 
         doc_id = stem
@@ -1007,9 +1131,9 @@ def datahub_upload(file: UploadFile = File(...)):
                 cur = conn.cursor()
                 cur.execute(
                     "INSERT INTO documents (document_id, document_name, document_type, file_path, chunk_count, workspace_id, status) "
-                    "VALUES (%s, %s, %s, %s, 0, 'default', 'processing') "
+                    "VALUES (%s, %s, %s, %s, 0, %s, 'processing') "
                     "ON CONFLICT (document_id) DO UPDATE SET status = 'processing'",
-                    (doc_id, stem.replace("_", " ").title(), ext.lstrip("."), str(dest))
+                    (doc_id, stem.replace("_", " ").title(), ext.lstrip("."), str(dest), workspace_id)
                 )
                 conn.commit()
         except Exception as e:
@@ -1021,9 +1145,9 @@ def datahub_upload(file: UploadFile = File(...)):
                 cur = conn.cursor()
                 cur.execute(
                     "INSERT INTO assets (asset_id, workspace_id, name, type, source_type, status, row_count, size_bytes, table_name) "
-                    "VALUES (%s, 'default', %s, 'unstructured', %s, 'ready', 0, %s, NULL) "
+                    "VALUES (%s, %s, %s, 'unstructured', %s, 'ready', 0, %s, NULL) "
                     "ON CONFLICT (asset_id) DO UPDATE SET status = 'ready', size_bytes = EXCLUDED.size_bytes, updated_at = NOW()",
-                    (asset_id, file.filename, ext.lstrip("."), len(file_bytes))
+                    (asset_id, workspace_id, file.filename, ext.lstrip("."), len(file_bytes))
                 )
                 conn.commit()
         except Exception as e:
@@ -1058,27 +1182,29 @@ def datahub_upload(file: UploadFile = File(...)):
 
 
 @app.get("/api/datahub/datasets")
-def datahub_list():
-    return dynamic_list_datasets()
+def datahub_list(workspace_id: str = "default"):
+    return dynamic_list_datasets(workspace_id)
 
 
 @app.get("/api/datahub/datasets/{dataset_id}")
-def datahub_detail(dataset_id: str):
-    ds = dynamic_get_dataset(dataset_id)
+def datahub_detail(dataset_id: str, workspace_id: str = "default"):
+    ds = dynamic_get_dataset(dataset_id, workspace_id)
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return ds
 
 
 @app.delete("/api/datahub/datasets/{dataset_id}")
-def datahub_delete(dataset_id: str):
-    if not dynamic_delete_dataset(dataset_id):
+def datahub_delete(dataset_id: str, workspace_id: str = "default"):
+    if not dynamic_delete_dataset(dataset_id, workspace_id):
         raise HTTPException(status_code=404, detail="Dataset not found")
     if _pipeline:
         _pipeline._cache.clear()
     try:
         from src.database.state_manager import get_cache_manager
         get_cache_manager().invalidate_workspace()
+        from src.llm.query_cache import clear_all_caches
+        clear_all_caches()
     except Exception:
         pass
     return {"deleted": True}
@@ -1089,13 +1215,13 @@ def datahub_delete(dataset_id: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/analytics/reviews")
-def reviews_overview():
+def reviews_overview(workspace_id: str = "default"):
     """Reviews — workspace data only. Computes from actual data if rating column exists."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return {"total_reviews": 0, "avg_rating": None, "negative_count": 0,
                 "negative_pct": 0, "by_rating": [], "top_negative_themes": []}
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         rating_entries = data["available_measures"].get("rating", [])
         if not rating_entries:
             return {"total_reviews": 0, "avg_rating": None, "negative_count": 0,
@@ -1131,12 +1257,12 @@ def reviews_overview():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/analytics/discounts")
-def discount_analytics():
+def discount_analytics(workspace_id: str = "default"):
     """Discount analytics — workspace data only. Computes from actual data if discount column exists."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return {"overall_avg_discount": 0, "discount_bands": [], "margin_by_band": []}
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         discount_entries = data["available_measures"].get("discount", [])
         if not discount_entries:
             return {"overall_avg_discount": 0, "discount_bands": [], "margin_by_band": []}
@@ -1161,19 +1287,20 @@ def discount_analytics():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/data-status")
-def data_status():
+def data_status(workspace_id: str = "default"):
     """Return whether structured data and knowledge base exist.
     CRITICAL: Only report workspace-uploaded data.
     """
+    from src.ingestion.document_loader import _chunk_workspace_id
     status = {"structured": {}, "knowledge": {}, "has_data": False, "has_workspace_data": False}
     try:
-        workspace_has = has_workspace_data()
+        workspace_has = has_workspace_data(workspace_id)
         status["has_workspace_data"] = workspace_has
 
         tables = {}
         if workspace_has:
             try:
-                assets = get_workspace_tables()
+                assets = get_workspace_tables(workspace_id)
                 for a in assets:
                     tables[a["table_name"]] = a.get("row_count", 0)
             except Exception:
@@ -1191,6 +1318,8 @@ def data_status():
         chunks = 0
         if _pipeline and _pipeline.vector_store:
             for c in _pipeline.vector_store.chunks:
+                if _chunk_workspace_id(c) != workspace_id:
+                    continue
                 docs.add(c.document_id)
                 chunks += 1
         status["knowledge"] = {"documents": len(docs), "chunks": chunks}
@@ -1257,9 +1386,9 @@ def system_health():
 # ---------------------------------------------------------------------------
 
 @app.post("/api/insights")
-def generate_insights():
+def generate_insights(workspace_id: str = "default"):
     """Generate proactive business insights from workspace data."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return {
             "insights": [{
                 "type": "info", "title": "No Data Available",
@@ -1271,7 +1400,7 @@ def generate_insights():
         }
 
     try:
-        overview = generate_dynamic_overview()
+        overview = generate_dynamic_overview(workspace_id)
         trend = overview.get("trend", [])
         breakdowns = overview.get("breakdowns", {})
         insights = []
@@ -1319,9 +1448,9 @@ def generate_insights():
 
 
 @app.post("/api/executive-brief")
-def executive_brief():
+def executive_brief(workspace_id: str = "default"):
     """Generate a structured executive brief from workspace data."""
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return {
             "sections": [{
                 "title": "No Data Available",
@@ -1330,9 +1459,9 @@ def executive_brief():
             "generated_at": datetime.now().isoformat(),
         }
 
-    total_revenue = workspace_total_revenue() or 0
-    total_units = workspace_total_quantity() or 0
-    total_spend = workspace_total_spend() or 0
+    total_revenue = workspace_total_revenue(workspace_id) or 0
+    total_units = workspace_total_quantity(workspace_id) or 0
+    total_spend = workspace_total_spend(workspace_id) or 0
 
     sections = [
         {
@@ -1341,7 +1470,7 @@ def executive_brief():
         },
         {
             "title": "Data Sources",
-            "content": f"Analysis based on {workspace_row_count()} records from uploaded workspace data.",
+            "content": f"Analysis based on {workspace_row_count(workspace_id)} records from uploaded workspace data.",
         },
     ]
     return {"sections": sections, "generated_at": datetime.now().isoformat()}
@@ -1352,11 +1481,11 @@ def executive_brief():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/investigation/{metric}")
-def investigate_metric(metric: str):
+def investigate_metric(metric: str, workspace_id: str = "default"):
     """Drill-down investigation for a specific metric — workspace data only."""
     result = {"metric": metric, "breakdowns": {}, "trend": [], "top_entities": []}
     try:
-        dynamic = generate_dynamic_overview()
+        dynamic = generate_dynamic_overview(workspace_id)
         if dynamic.get("breakdowns"):
             for dim_name, dim_data in dynamic["breakdowns"].items():
                 result["breakdowns"][f"by_{dim_name}"] = dim_data
@@ -1432,11 +1561,12 @@ def delete_action(action_id: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/data-center")
-def data_center():
-    """Unified registry of all structured + unstructured data assets — workspace data only."""
+def data_center(workspace_id: str = "default"):
+    """Unified registry of structured + unstructured data assets — workspace data only."""
+    from src.ingestion.document_loader import _chunk_workspace_id
     assets = []
     try:
-        dynamic_ds = dynamic_list_datasets()
+        dynamic_ds = dynamic_list_datasets(workspace_id)
         for ds in dynamic_ds:
             assets.append({
                 "id": f"datahub_{ds.get('dataset_id', ds.get('filename', 'unknown'))}",
@@ -1454,6 +1584,8 @@ def data_center():
     try:
         docs = {}
         for c in (_pipeline.vector_store.chunks if _pipeline else []):
+            if _chunk_workspace_id(c) != workspace_id:
+                continue
             if c.document_id not in docs:
                 docs[c.document_id] = {
                     "id": f"kb_{c.document_id}",
@@ -1482,12 +1614,13 @@ def data_center():
 
 
 @app.get("/api/data-center/{asset_id}")
-def get_data_center_asset(asset_id: str):
+def get_data_center_asset(asset_id: str, workspace_id: str = "default"):
     """Get a single data center asset by ID."""
+    from src.ingestion.document_loader import _chunk_workspace_id
     if asset_id.startswith("datahub_"):
         dataset_id = asset_id.replace("datahub_", "", 1)
         try:
-            ds_list = dynamic_list_datasets()
+            ds_list = dynamic_list_datasets(workspace_id)
             for ds in ds_list:
                 if ds.get('dataset_id') == dataset_id or ds.get('filename') == dataset_id:
                     return {
@@ -1508,7 +1641,7 @@ def get_data_center_asset(asset_id: str):
         document_id = asset_id.replace("kb_", "", 1)
         if _pipeline:
             for c in _pipeline.vector_store.chunks:
-                if c.document_id == document_id:
+                if c.document_id == document_id and _chunk_workspace_id(c) == workspace_id:
                     return {
                         "id": f"kb_{c.document_id}",
                         "name": c.document_name,
@@ -1524,11 +1657,11 @@ def get_data_center_asset(asset_id: str):
 
 
 @app.delete("/api/data-center/{asset_id}")
-def delete_data_center_asset(asset_id: str):
+def delete_data_center_asset(asset_id: str, workspace_id: str = "default"):
     """Delete a data center asset."""
     if asset_id.startswith("datahub_"):
         dataset_id = asset_id.replace("datahub_", "", 1)
-        if dynamic_delete_dataset(dataset_id):
+        if dynamic_delete_dataset(dataset_id, workspace_id):
             if _pipeline:
                 _pipeline._cache.clear()
             return {"deleted": True, "type": "structured"}
@@ -1536,6 +1669,17 @@ def delete_data_center_asset(asset_id: str):
 
     if asset_id.startswith("kb_"):
         document_id = asset_id.replace("kb_", "", 1)
+        # Ownership check: only the owning workspace may delete a document
+        try:
+            with sql_layer.get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT 1 FROM documents WHERE document_id = %s AND workspace_id = %s",
+                            (document_id, workspace_id))
+                owned = cur.fetchone() is not None
+        except Exception:
+            owned = False
+        if not owned:
+            raise HTTPException(status_code=404, detail="Document not found")
         for ext in [".md", ".pdf", ".txt", ".docx", ".doc"]:
             p = Path(config.KB_DIR) / f"{document_id}{ext}"
             if p.exists():
@@ -1565,11 +1709,11 @@ def delete_data_center_asset(asset_id: str):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/semantic/metrics")
-def semantic_metrics():
+def semantic_metrics(workspace_id: str = "default"):
     """Dynamic semantic metrics from uploaded data only."""
     metrics = []
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         for concept, entries in data.get("available_measures", {}).items():
             for e in entries:
                 metrics.append({
@@ -1584,11 +1728,11 @@ def semantic_metrics():
     return {"metrics": metrics, "count": len(metrics)}
 
 @app.get("/api/semantic/dimensions")
-def semantic_dimensions():
+def semantic_dimensions(workspace_id: str = "default"):
     """Dynamic semantic dimensions from uploaded data only."""
     dimensions = []
     try:
-        data = discover_available_data()
+        data = discover_available_data(workspace_id)
         for concept, entries in data.get("available_dimensions", {}).items():
             for e in entries:
                 dimensions.append({
@@ -1606,15 +1750,15 @@ def semantic_dimensions():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/data-quality")
-def data_quality():
+def data_quality(workspace_id: str = "default"):
     """Dynamic data quality — inspects uploaded workspace tables only."""
     report = {"tables": {}, "overall_score": 0, "total_checks": 0, "passed_checks": 0}
 
-    if not has_workspace_data():
+    if not has_workspace_data(workspace_id):
         return report
 
     try:
-        tables_data = get_workspace_tables()
+        tables_data = get_workspace_tables(workspace_id)
         if not tables_data:
             return report
 
@@ -1683,7 +1827,8 @@ def data_quality():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/search")
-def global_search(q: str = ""):
+def global_search(q: str = "", workspace_id: str = "default"):
+    from src.ingestion.document_loader import _chunk_workspace_id
     if not q.strip():
         return {"results": [], "total": 0}
     results = []
@@ -1691,7 +1836,7 @@ def global_search(q: str = ""):
 
     # Search workspace assets
     try:
-        ds_list = dynamic_list_datasets()
+        ds_list = dynamic_list_datasets(workspace_id)
         for ds in ds_list:
             fn = (ds.get("filename") or "").lower()
             if ql in fn:
@@ -1699,8 +1844,10 @@ def global_search(q: str = ""):
     except Exception:
         pass
 
-    # Search documents
+    # Search documents (own workspace only)
     for doc in (_pipeline.vector_store.chunks if _pipeline else []):
+        if _chunk_workspace_id(doc) != workspace_id:
+            continue
         if ql in doc.document_name.lower() or ql in doc.text[:200].lower():
             results.append({"type": "document", "id": doc.document_id, "title": doc.document_name, "subtitle": doc.document_type})
             break
@@ -1714,10 +1861,11 @@ def global_search(q: str = ""):
 
 
 @app.get("/api/conversations")
-def list_conversations():
+def list_conversations(workspace_id: str = "default"):
     with sql_layer.get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC")
+        cur.execute("SELECT id, title, created_at, updated_at FROM conversations WHERE workspace_id = %s ORDER BY updated_at DESC",
+                    (workspace_id,))
         rows = cur.fetchall()
         convos = []
         for r in rows:
@@ -1733,24 +1881,26 @@ def list_conversations():
 
 
 @app.post("/api/conversations")
-def create_conversation():
+def create_conversation(workspace_id: str = "default"):
     cid = f"conv_{uuid.uuid4().hex[:12]}"
     now = datetime.now().isoformat()
     with sql_layer.get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO conversations (id, title, created_at, updated_at) VALUES (%s, %s, %s, %s)",
-                    (cid, "New Conversation", now, now))
+        cur.execute("INSERT INTO conversations (id, title, workspace_id, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+                    (cid, "New Conversation", workspace_id, now, now))
         conn.commit()
-    return {"id": cid, "message_count": 0}
+    return {"id": cid, "workspace_id": workspace_id, "message_count": 0}
 
 
 @app.get("/api/conversations/{conversation_id}")
-def get_conversation(conversation_id: str):
+def get_conversation(conversation_id: str, workspace_id: str = "default"):
     with sql_layer.get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, title, created_at, updated_at FROM conversations WHERE id = %s", (conversation_id,))
+        cur.execute("SELECT id, title, workspace_id, created_at, updated_at FROM conversations WHERE id = %s AND workspace_id = %s",
+                    (conversation_id, workspace_id))
         conv = cur.fetchone()
         if not conv:
+            # Cross-workspace access must look like "not found" — never leak existence.
             raise HTTPException(status_code=404, detail="Conversation not found")
         conv = _to_dict(conv, cur)
         cur.execute("SELECT role, content, result FROM conversation_messages WHERE conversation_id = %s ORDER BY id", (conversation_id,))
@@ -1766,13 +1916,18 @@ def get_conversation(conversation_id: str):
 
 
 @app.post("/api/conversations/{conversation_id}/messages")
-def add_message(conversation_id: str, message: dict):
+def add_message(conversation_id: str, message: dict, workspace_id: str = "default"):
     role = message.get("role", "user")
     content = message.get("content", "")
     now = datetime.now().isoformat()
 
     with sql_layer.get_conn() as conn:
         cur = conn.cursor()
+        # Ownership check before writing — no writing into another workspace's thread
+        cur.execute("SELECT 1 FROM conversations WHERE id = %s AND workspace_id = %s",
+                    (conversation_id, workspace_id))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
         result_json = None
         if message.get("result"):
             result_json = json.dumps(message["result"])
@@ -1794,9 +1949,14 @@ def add_message(conversation_id: str, message: dict):
 
 
 @app.delete("/api/conversations/{conversation_id}")
-def delete_conversation(conversation_id: str):
+def delete_conversation(conversation_id: str, workspace_id: str = "default"):
     with sql_layer.get_conn() as conn:
         cur = conn.cursor()
+        # Only the owning workspace can delete its own conversation
+        cur.execute("SELECT 1 FROM conversations WHERE id = %s AND workspace_id = %s",
+                    (conversation_id, workspace_id))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
         cur.execute("DELETE FROM conversation_messages WHERE conversation_id = %s", (conversation_id,))
         cur.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
         conn.commit()
